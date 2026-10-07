@@ -26,7 +26,6 @@ FIRST_PIPE_X = 680     # where the first pipe starts (smaller = reach it sooner)
 GATE_GAP = 145         # height of each of the two gaps in a pipe
 PIPE_GAP = 170         # gap of a normal (single-entrance) pipe
 GATE_CHANCE = 0.45     # chance a pipe has two entrances with gates (from the 2nd pipe on)
-RY_FLIP = 0.4          # RY gate: 40% flip, 60% stay
 RY_THETA = math.pi / 3 # 75%chance stay, 25% flip
 GATE_COLS = {"X": (225, 60, 80), "RY": (140, 90, 230)}
 PIPE_W = 58             # pipe thickness (was 80)
@@ -53,7 +52,7 @@ def build_circuit(upside_down, gate, theta_speed):
     if gate == "X":
         qc.x(0)                      # X: always flips  |0> <-> |1>
     elif gate == "RY":
-        qc.ry(RY_THETA, 0)           # RY: 60% stay, 40% flip (same from |0> or |1>)
+        qc.ry(RY_THETA, 0)           
     # gate None (normal pipe): q0 is left alone, so gravity stays the same
     qc.ry(theta_speed, 1)
     qc.x(2)
