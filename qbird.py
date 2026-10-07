@@ -1,29 +1,4 @@
-"""
-Qubird - the bird's gravity is a qubit, and YOU choose which gate it flies through
-Some pipes have two entrances, and each entrance holds a quantum gate
-(normal single-entrance pipes leave the bird's qubit alone):
-  X   gate -> always flips the bird's qubit   (|0> <-> |1>)
-  RY  gate -> rotates it so there is a 60% chance to stay, 40% chance to flip
-After passing a pipe, a 3-qubit circuit is measured once:
-  q0      -> the bird's gravity qubit: starts in the bird's current state, then the
-             chosen gate is applied.  0 = normal gravity, 1 = upside down
-  q1 = 1  -> horizontal speed changes
-  q2      -> 0 = slower, 1 = faster (H gate controlled on q0 = 0,
-             so when upside down it is ALWAYS slower - never FAST)
 
-Upside down also slows the world down (x0.7) to keep it fair.
-The game starts slow and speeds up a little with every pipe.
-
-Power-ups (glowing orbs in some pipe gaps)
-  Grabbing an orb measures ONE qubit after an H gate -> 50/50, used automatically:
-  |0> GHOST     pass through pipes for 4 seconds (inspired by tunnelling)
-  |1> DOUBLE    next 5 pipes are worth 2 points
-
-Controls
-  ENTER         : start game
-  SPACE / click : flap  (fly through the upper or lower gap to pick a gate)
-  R             : back to title after game over
-"""
 import math
 import random
 
@@ -38,8 +13,8 @@ GROUND_H = 70
 FPS = 60
 GRAVITY = 0.45
 FLAP = -8.0
-START_SPEED = 2.2      # game starts slow...
-MAX_SPEED = 4.8        # ...and speeds up to this
+START_SPEED = 2.2      # game starts slow
+MAX_SPEED = 4.8        # speeds up
 SPEED_STEP = 0.08      # extra speed per pipe passed
 FLIP_SLOW = 0.7        # world moves slower while upside down
 FLIP_GRAVITY = 0.7     # gravity is weaker while upside down (easier to control)
