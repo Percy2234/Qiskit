@@ -1,8 +1,12 @@
 """
-Qubird - a bird game where a quantum circuit decides the effects
-Every time the bird passes a pipe, a 3-qubit circuit is measured once.
-Each effect has its own qubit, so several effects can stack at once.
-  q0 = 1  -> upside down (gravity flips, bird falls UP)
+Qubird - the bird's gravity is a qubit, and YOU choose which gate it flies through
+Some pipes have two entrances, and each entrance holds a quantum gate
+(normal single-entrance pipes leave the bird's qubit alone):
+  X   gate -> always flips the bird's qubit   (|0> <-> |1>)
+  RY  gate -> rotates it so there is a 60% chance to stay, 40% chance to flip
+After passing a pipe, a 3-qubit circuit is measured once:
+  q0      -> the bird's gravity qubit: starts in the bird's current state, then the
+             chosen gate is applied.  0 = normal gravity, 1 = upside down
   q1 = 1  -> horizontal speed changes
   q2      -> 0 = slower, 1 = faster (H gate controlled on q0 = 0,
              so when upside down it is ALWAYS slower - never FAST)
@@ -19,7 +23,7 @@ Power-ups (glowing orbs in some pipe gaps)
 
 Controls
   ENTER         : start game
-  SPACE / click : flap
+  SPACE / click : flap  (fly through the upper or lower gap to pick a gate)
   X             : use the stored power-up
   R             : back to title after game over
 """
@@ -44,11 +48,16 @@ FLIP_SLOW = 0.7        # world moves slower while upside down
 FLIP_GRAVITY = 0.7     # gravity is weaker while upside down (easier to control)
 FLIP_RAMP = 30         # frames (0.5 s) for gravity to fade back in after a flip
 FLIP_WARN = 60         # frames (1 s) the GRAVITY UP / DOWN warning stays on screen
-FLIP_GAP = 230         # wider gap on the first pipe after turning upside down
+FLIP_GAP_BONUS = 25    # both gaps are wider on the first pipe after turning upside down
 INTRO_FRAMES = 150     # 2.5 s "TEAM JORDAN presents" splash at launch
 ORB_CHANCE = 0.35      # chance a pipe has a power-up orb
 FIRST_PIPE_X = 680     # where the first pipe starts (smaller = reach it sooner)
-PIPE_GAP = 170
+GATE_GAP = 145         # height of each of the two gaps in a pipe
+PIPE_GAP = 170         # gap of a normal (single-entrance) pipe
+GATE_CHANCE = 0.45     # chance a pipe has two entrances with gates (from the 2nd pipe on)
+RY_FLIP = 0.4          # RY gate: 40% flip, 60% stay
+RY_THETA = 2 * math.asin(math.sqrt(RY_FLIP))   # P(flip) = sin^2(theta / 2) = 0.4
+GATE_COLS = {"X": (225, 60, 80), "RY": (140, 90, 230)}
 PIPE_W = 80
 PIPE_SPACING = 300
 
@@ -64,10 +73,17 @@ INK = (30, 25, 60)
 
 
 # ---------------- Quantum part ----------------
-def build_circuit(theta_flip, theta_speed):
-    """Circuit that decides the effects. Angles set the probabilities (P(1) = sin^2(theta/2))."""
+def build_circuit(upside_down, gate, theta_speed):
+    """q0 = the bird's gravity qubit. Load its current state, then apply the gate it flew through.
+    Angles set the probabilities (P(1) = sin^2(theta/2))."""
     qc = QuantumCircuit(3)
-    qc.ry(theta_flip, 0)
+    if upside_down:
+        qc.x(0)                      # prepare |1> if the bird is currently upside down
+    if gate == "X":
+        qc.x(0)                      # X: always flips  |0> <-> |1>
+    elif gate == "RY":
+        qc.ry(RY_THETA, 0)           # RY: 60% stay, 40% flip (same from |0> or |1>)
+    # gate None (normal pipe): q0 is left alone, so gravity stays the same
     qc.ry(theta_speed, 1)
     # q2 decides slower / faster, but ONLY gets an H gate when q0 = 0 (not upside down).
     # X-CH-X = "controlled on |0>": if the bird is upside down, q2 stays |0> -> never FAST.
@@ -283,15 +299,54 @@ class Bird:
 
 
 class Pipe:
-    def __init__(self, x, allow_orb=True):
+    _font = None
+
+    def __init__(self, x, allow_orb=True, allow_gate=True):
         self.x = x
-        self.gap_y = random.randint(130, H - GROUND_H - 130)
         self.passed = False
-        self.gap = PIPE_GAP
+        self.chosen = None                               # which gap the bird flew through
+        self.has_gates = allow_gate and random.random() < GATE_CHANCE
+        if self.has_gates:
+            # two entrances, each with a gate
+            self.gap = GATE_GAP
+            self.mid_h = random.randint(60, 90)          # block between the two gaps
+            max_top = (H - GROUND_H) - 30 - 2 * self.gap - self.mid_h
+            self.top_h = random.randint(30, max(30, max_top))
+            self.gates = random.sample(["X", "RY"], 2)   # [upper gap gate, lower gap gate]
+        else:
+            # normal pipe: one entrance, no gate
+            self.gap = PIPE_GAP
+            self.gap_y = random.randint(130, H - GROUND_H - 130)
+            self.gates = []
         self.orb = allow_orb and random.random() < ORB_CHANCE
+        self.orb_gap = random.randint(0, 1) if self.has_gates else 0
+
+    def gaps(self):
+        """(top, bottom) of each gap: two for a gate pipe, one for a normal pipe."""
+        if not self.has_gates:
+            return [(self.gap_y - self.gap // 2, self.gap_y + self.gap // 2)]
+        g1 = (self.top_h, self.top_h + self.gap)
+        g2_top = g1[1] + self.mid_h
+        return [g1, (g2_top, g2_top + self.gap)]
+
+    def gap_center(self, i):
+        a, b = self.gaps()[i]
+        return (a + b) / 2
+
+    def widen(self, extra):
+        """Make the gap(s) bigger, taking the space from the blocks."""
+        self.gap += extra
+        if not self.has_gates:
+            return
+        self.top_h = max(20, self.top_h - extra // 2)
+        self.mid_h = max(40, self.mid_h - extra // 2)
+        overflow = self.gaps()[1][1] - (H - GROUND_H - 20)
+        if overflow > 0:
+            self.top_h = max(20, self.top_h - overflow)
 
     def orb_pos(self):
-        return self.x + PIPE_W / 2, self.gap_y
+        # the orb floats just in front of one gap, so grabbing it means picking that gate
+        return self.x - 60, self.gap_center(self.orb_gap)
 
     def draw_orb(self, surf, t):
         if not self.orb:
@@ -314,10 +369,12 @@ class Pipe:
         surf.blit(q, q.get_rect(center=(ox, oy)))
 
     def rects(self):
-        top = pygame.Rect(self.x, 0, PIPE_W, self.gap_y - self.gap // 2)
-        bot_y = self.gap_y + self.gap // 2
-        bot = pygame.Rect(self.x, bot_y, PIPE_W, H - GROUND_H - bot_y)
-        return top, bot
+        gs = self.gaps()
+        rs = [pygame.Rect(self.x, 0, PIPE_W, gs[0][0])]                       # top block
+        if self.has_gates:
+            rs.append(pygame.Rect(self.x, gs[0][1], PIPE_W, gs[1][0] - gs[0][1]))  # middle block
+        rs.append(pygame.Rect(self.x, gs[-1][1], PIPE_W, H - GROUND_H - gs[-1][1]))  # bottom block
+        return rs
 
     @staticmethod
     def shaded_rect(surf, r):
@@ -333,11 +390,43 @@ class Pipe:
         pygame.draw.rect(surf, (25, 70, 25), r, 3)
 
     def draw(self, surf):
-        top, bot = self.rects()
-        for r, is_top in ((top, True), (bot, False)):
+        rs = self.rects()
+        for r in rs:
             self.shaded_rect(surf, r)
-            cap = pygame.Rect(r.x - 7, r.bottom - 28 if is_top else r.y, PIPE_W + 14, 28)
-            self.shaded_rect(surf, cap)
+        # caps on every edge that faces a gap
+        cap_h = 22 if self.has_gates else 28
+        edges = []
+        for i, r in enumerate(rs):
+            if i > 0:
+                edges.append(r.y)                      # top edge faces the gap above
+            if i < len(rs) - 1:
+                edges.append(r.bottom - cap_h)         # bottom edge faces the gap below
+        for y in edges:
+            self.shaded_rect(surf, pygame.Rect(self.x - 7, y, PIPE_W + 14, cap_h))
+
+    def draw_gates(self, surf, t):
+        """A gate icon floating in each gap."""
+        if not self.has_gates:
+            return
+        if Pipe._font is None:
+            Pipe._font = (pygame.font.SysFont("arial", 24, bold=True),
+                          pygame.font.SysFont("arial", 13, bold=True))
+        f_big, f_small = Pipe._font
+        for i, g in enumerate(self.gates):
+            cx, cy = self.x + PIPE_W / 2, self.gap_center(i) + math.sin(t * 0.1 + i) * 3
+            col = GATE_COLS[g]
+            if self.chosen is not None and self.chosen != i:
+                col = tuple(c // 2 + 60 for c in col)          # fade the gate you skipped
+            box = pygame.Rect(0, 0, 52, 46)
+            box.center = (cx, cy)
+            pygame.draw.rect(surf, (20, 15, 50), box.move(2, 3), border_radius=10)
+            pygame.draw.rect(surf, col, box, border_radius=10)
+            pygame.draw.rect(surf, WHITE, box, 2, border_radius=10)
+            label = f_big.render(g, True, WHITE)
+            surf.blit(label, label.get_rect(center=(cx, cy - (5 if g == "RY" else 0))))
+            if g == "RY":
+                sub = f_small.render("60/40", True, (235, 225, 255))
+                surf.blit(sub, sub.get_rect(center=(cx, cy + 13)))
 
 
 # ---------------- Main ----------------
@@ -357,7 +446,6 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     stars = [(random.randint(0, W), random.randint(0, H - 200), random.random()) for _ in range(60)]
     clouds = [[random.randint(0, W), random.randint(20, 220), random.uniform(0.6, 1.3)] for _ in range(6)]
 
-    theta_flip = np.pi / 2   # upside down 50%
     theta_speed = np.pi / 2  # speed change 50%
 
     state = "play" if start_playing else "intro"   # intro -> title -> play -> over -> title
@@ -365,7 +453,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     best = 0
 
     def new_game():
-        return Bird(), [Pipe(FIRST_PIPE_X + i * PIPE_SPACING, allow_orb=i >= 1) for i in range(4)], 0
+        return Bird(), [Pipe(FIRST_PIPE_X + i * PIPE_SPACING, allow_orb=i >= 1, allow_gate=i >= 1) for i in range(4)], 0
 
     bird, pipes, score = new_game()
     last_bits, effect_msg, badges = "---", "", []
@@ -451,7 +539,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             # autoplay (for testing)
             if autoplay:
                 nxt = next(p for p in pipes if p.x + PIPE_W > bird.x - bird.r)
-                target = nxt.gap_y + (-30 if bird.flipped else 30)
+                gi = min(range(len(nxt.gaps())), key=lambda i: abs(nxt.gap_center(i) - bird.y)) if nxt.chosen is None else nxt.chosen
+                target = nxt.gap_center(gi) + (-25 if bird.flipped else 25)
                 if (not bird.flipped and bird.y > target and bird.vy > 0) or \
                    (bird.flipped and bird.y < target and bird.vy < 0):
                     bird.flap()
@@ -459,32 +548,47 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             bird.update()
             for p in pipes:
                 p.x -= speed
+                # remember which gap (= which gate) the bird flew through
+                if p.chosen is None and p.x + PIPE_W / 2 <= bird.x:
+                    gs = p.gaps()
+                    p.chosen = 0 if len(gs) == 1 or bird.y < (gs[0][1] + gs[1][0]) / 2 else 1
                 # measure only after the bird's whole body has cleared the pipe (cap included)
                 if not p.passed and p.x + PIPE_W + 7 < bird.x - bird.r:
                     p.passed = True
                     score += 2 if double_pipes > 0 else 1
                     double_pipes = max(0, double_pipes - 1)
                     # passed a pipe -> quantum measurement
-                    qc = build_circuit(theta_flip, theta_speed)
+                    gate = p.gates[p.chosen if p.chosen is not None else 0] if p.has_gates else None
+                    was_flipped = bird.flipped
+                    qc = build_circuit(was_flipped, gate, theta_speed)
                     last_bits, q = measure_once(qc)
+                    if gate is None:
+                        gate_msg = ""                       # normal pipe: gravity unchanged
+                    elif gate == "X":
+                        gate_msg = "X: FLIPPED!"
+                    elif q[0] != was_flipped:
+                        gate_msg = "RY: FLIPPED (40%)"
+                    else:
+                        gate_msg = "RY: STAYED (60%)"
                     if bird.set_flipped(q[0]):
                         flip_warn = FLIP_WARN
                         if bird.flipped:
-                            # give the next pipe a wider gap while the player adapts
-                            nxt_pipe = next((pp for pp in pipes if not pp.passed), None)
+                            # give the next pipe wider gaps while the player adapts
+                            nxt_pipe = next((pp for pp in pipes if not pp.passed and pp.chosen is None), None)
                             if nxt_pipe:
-                                nxt_pipe.gap = FLIP_GAP
+                                nxt_pipe.widen(FLIP_GAP_BONUS)
                     speed_mult = (1.6 if q[2] else 0.55) if q[1] else 1.0
                     badges = []
                     if q[0]:
                         badges.append(("UPSIDE DOWN", (110, 50, 180)))
                     if q[1]:
                         badges.append(("FAST", (230, 80, 70)) if q[2] else ("SLOW", (60, 140, 230)))
-                    effect_msg = " + ".join(b[0] for b in badges) if badges else "NORMAL"
-                    msg_timer = 90
-                    flash = 10
-                    # quantum sparkle burst
-                    for _ in range(30):
+                    speed_part = [b[0] for b in badges if b[0] in ("FAST", "SLOW")]
+                    effect_msg = " + ".join([m for m in [gate_msg] + speed_part if m])
+                    msg_timer = 90 if effect_msg else 0
+                    flash = 10 if gate else 0
+                    # quantum sparkle burst (bigger when a gate was applied)
+                    for _ in range(30 if gate else 8):
                         particles.append(Particle(bird.x, bird.y, random.choice(
                             [(200, 160, 255), GOLD, (120, 220, 255)]), 6, 45, 5))
             if pipes[0].x < -PIPE_W - 20:
@@ -565,6 +669,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             for p in pipes:
                 p.draw(frame)
             for p in pipes:
+                p.draw_gates(frame, t)
+            for p in pipes:
                 p.draw_orb(frame, t)
 
         # speed lines while FAST
@@ -614,7 +720,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             text(frame, font, "a quantum flight", (W // 2, 190 + bob), (230, 220, 255))
             if (t // 30) % 2 == 0:
                 outlined(frame, big, "PRESS ENTER", (W // 2, 360), WHITE, INK, 3)
-            text(frame, small, "SPACE = flap    X = use power-up    Every pipe is a quantum measurement",
+            text(frame, small, "SPACE = flap    Fly through X (always flip) or RY (60/40)    X key = use power-up",
                  (W // 2, 420), WHITE)
             text(frame, small, f"Best: {best}", (W // 2, 450), GOLD)
             credit = "made by TEAM JORDAN  \u00b7  Daniel & Percy"
@@ -651,18 +757,18 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 bx += w + 10
 
             # quantum info panel (bottom-right, where the bird never flies)
-            px, py = W - 172, H - GROUND_H - 84
-            panel = pygame.Surface((160, 72), pygame.SRCALPHA)
+            px, py = W - 212, H - GROUND_H - 84
+            panel = pygame.Surface((200, 72), pygame.SRCALPHA)
             pygame.draw.rect(panel, (25, 15, 60, 170), panel.get_rect(), border_radius=14)
             pygame.draw.rect(panel, (180, 150, 255, 200), panel.get_rect(), 2, border_radius=14)
             frame.blit(panel, (px, py))
-            rows = [("Flip", prob_one(theta_flip)),
-                    ("Speed", prob_one(theta_speed))]
-            for i, (name, pval) in enumerate(rows):
+            rows = [("Gravity", "|1> UP" if bird.flipped else "|0> DOWN"),
+                    ("Speed", f"{prob_one(theta_speed):.0%}")]
+            for i, (name, val) in enumerate(rows):
                 y = py + 12 + i * 28
                 frame.blit(small.render(name, True, WHITE), (px + 14, y))
-                pct = small.render(f"{pval:.0%}", True, GOLD)
-                frame.blit(pct, (px + 146 - pct.get_width(), y))
+                v = small.render(val, True, GOLD)
+                frame.blit(v, (px + 186 - v.get_width(), y))
 
         if msg_timer > 0 and state == "play" and effect_msg:
             msg_timer -= 1
