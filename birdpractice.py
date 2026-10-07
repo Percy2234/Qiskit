@@ -1,13 +1,11 @@
 """
 Qubird - a bird game where a quantum circuit decides the effects
-Every time the bird passes a pipe, a 5-qubit circuit is measured once.
+Every time the bird passes a pipe, a 3-qubit circuit is measured once.
 Each effect has its own qubit, so several effects can stack at once.
   q0 = 1  -> upside down (gravity flips, bird falls UP)
   q1 = 1  -> horizontal speed changes
   q2      -> 0 = slower, 1 = faster (H gate controlled on q0 = 0,
              so when upside down it is ALWAYS slower - never FAST)
-  q3 = 1  -> gravity strength changes
-  q4      -> 0 = light (floaty), 1 = heavy (50:50 via H gate)
 
 Upside down also slows the world down (x0.7) to keep it fair.
 The game starts slow and speeds up a little with every pipe.
@@ -17,7 +15,7 @@ Power-ups (glowing orbs in some pipe gaps)
   The power-up is stored (one slot) and only used when you press X:
   |00> SHIELD    survive one pipe hit (quantum error correction!)
   |01> GHOST     pass through pipes for 4 seconds (tunnelling)
-  |10> COLLAPSE  next pipe gives no effects (state collapses to |00000>)
+  |10> COLLAPSE  next pipe gives no effects (state collapses to |000>)
   |11> DOUBLE    next 5 pipes are worth 2 points
 
 Controls
@@ -62,9 +60,9 @@ INK = (30, 25, 60)
 
 
 # ---------------- Quantum part ----------------
-def build_circuit(theta_flip, theta_speed, theta_grav):
+def build_circuit(theta_flip, theta_speed):
     """Circuit that decides the effects. Angles set the probabilities (P(1) = sin^2(theta/2))."""
-    qc = QuantumCircuit(5)
+    qc = QuantumCircuit(3)
     qc.ry(theta_flip, 0)
     qc.ry(theta_speed, 1)
     # q2 decides slower / faster, but ONLY gets an H gate when q0 = 0 (not upside down).
@@ -73,15 +71,13 @@ def build_circuit(theta_flip, theta_speed, theta_grav):
     qc.x(0)
     qc.ch(0, 2)
     qc.x(0)
-    qc.ry(theta_grav, 3)
-    qc.h(4)          # light / heavy 50:50
     return qc
 
 
 def measure_once(qc):
     """Measure the circuit once. Qiskit bit order: rightmost character is q0."""
     counts = Statevector(qc).sample_counts(shots=1)
-    bits = next(iter(counts))  # e.g. '01101' (q4 q3 q2 q1 q0)
+    bits = next(iter(counts))  # e.g. '101' (q2 q1 q0)
     q = [bits[-1 - i] == "1" for i in range(len(bits))]  # q[0] = q0, q[1] = q1, ...
     return bits, q
 
@@ -178,15 +174,14 @@ class Bird:
         self.vy = 0.0
         self.r = 20
         self.flipped = False
-        self.grav_mult = 1.0
         self.trail = []
 
     def gravity_factor(self):
-        """HEAVY / FLOATY multiplier, plus weaker gravity while upside down."""
-        return self.grav_mult * (FLIP_GRAVITY if self.flipped else 1.0)
+        """Weaker gravity while upside down."""
+        return FLIP_GRAVITY if self.flipped else 1.0
 
     def flap(self):
-        # scale flap with gravity so jump height stays similar (heavy = snappy, floaty = slow-motion)
+        # scale flap with gravity so jump height stays similar
         f = FLAP * math.sqrt(self.gravity_factor())
         self.vy = -f if self.flipped else f
 
@@ -281,9 +276,11 @@ class Pipe:
         oy += math.sin(t * 0.1 + self.x * 0.01) * 6
         g = pygame.Surface((70, 70), pygame.SRCALPHA)
         pulse = 3 * math.sin(t * 0.2)
-        pygame.draw.circle(g, (255, 255, 255, 50), (35, 35), int(30 + pulse))
-        pygame.draw.circle(g, (180, 140, 255, 230), (35, 35), 16)
-        pygame.draw.circle(g, (255, 255, 255), (35, 35), 16, 3)
+        # bright gold halo so the orb stands out on both blue and purple skies
+        pygame.draw.circle(g, (255, 220, 80, 70), (35, 35), int(32 + pulse))
+        pygame.draw.circle(g, (255, 235, 140, 120), (35, 35), int(24 + pulse))
+        pygame.draw.circle(g, (40, 200, 255), (35, 35), 17)
+        pygame.draw.circle(g, (255, 255, 255), (35, 35), 17, 3)
         # orbiting "electrons"
         for k in range(3):
             a = t * 0.12 + k * math.tau / 3
@@ -337,7 +334,6 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
 
     theta_flip = np.pi / 2   # upside down 50%
     theta_speed = np.pi / 2  # speed change 50%
-    theta_grav = np.pi / 2   # gravity strength change 50%
 
     state = "play" if start_playing else "title"   # title -> play -> over -> title
     best = 0
@@ -346,7 +342,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
         return Bird(), [Pipe(W + 200 + i * PIPE_SPACING, allow_orb=i >= 2) for i in range(4)], 0
 
     bird, pipes, score = new_game()
-    last_bits, effect_msg, badges = "-----", "", []
+    last_bits, effect_msg, badges = "---", "", []
     speed_mult = 1.0
     shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
     held = None            # stored power-up: (bits, name, colour), used with X
@@ -367,10 +363,11 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             if e.type == pygame.KEYDOWN:
                 if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state == "title":
                     bird, pipes, score = new_game()
-                    last_bits, effect_msg, badges = "-----", "", []
+                    last_bits, effect_msg, badges = "---", "", []
                     speed_mult = 1.0
                     shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
                     held = None
+                    msg_timer, flash, shake = 0, 0, 0    # clear leftovers from the last game
                     particles = []
                     state = "play"
                     bird.flap()
@@ -435,22 +432,19 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     double_pipes = max(0, double_pipes - 1)
                     # passed a pipe -> quantum measurement
                     if collapse:
-                        # COLLAPSE power-up: the state is forced to |00000> -> no effects
+                        # COLLAPSE power-up: the state is forced to |000> -> no effects
                         collapse = False
-                        last_bits, q = "00000", [False] * 5
+                        last_bits, q = "000", [False] * 3
                     else:
-                        qc = build_circuit(theta_flip, theta_speed, theta_grav)
+                        qc = build_circuit(theta_flip, theta_speed)
                         last_bits, q = measure_once(qc)
                     bird.flipped = q[0]
                     speed_mult = (1.6 if q[2] else 0.55) if q[1] else 1.0
-                    bird.grav_mult = (1.6 if q[4] else 0.5) if q[3] else 1.0
                     badges = []
                     if q[0]:
                         badges.append(("UPSIDE DOWN", (110, 50, 180)))
                     if q[1]:
                         badges.append(("FAST", (230, 80, 70)) if q[2] else ("SLOW", (60, 140, 230)))
-                    if q[3]:
-                        badges.append(("HEAVY", (120, 90, 60)) if q[4] else ("FLOATY", (40, 170, 150)))
                     effect_msg = " + ".join(b[0] for b in badges) if badges else "NORMAL"
                     msg_timer = 90
                     flash = 10
@@ -610,21 +604,20 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 bx += w + 10
 
             # quantum info panel (bottom-right, where the bird never flies)
-            px, py = W - 172, H - GROUND_H - 112
-            panel = pygame.Surface((160, 100), pygame.SRCALPHA)
+            px, py = W - 172, H - GROUND_H - 84
+            panel = pygame.Surface((160, 72), pygame.SRCALPHA)
             pygame.draw.rect(panel, (25, 15, 60, 170), panel.get_rect(), border_radius=14)
             pygame.draw.rect(panel, (180, 150, 255, 200), panel.get_rect(), 2, border_radius=14)
             frame.blit(panel, (px, py))
             rows = [("Flip", prob_one(theta_flip)),
-                    ("Speed", prob_one(theta_speed)),
-                    ("Gravity", prob_one(theta_grav))]
+                    ("Speed", prob_one(theta_speed))]
             for i, (name, pval) in enumerate(rows):
                 y = py + 12 + i * 28
                 frame.blit(small.render(name, True, WHITE), (px + 14, y))
                 pct = small.render(f"{pval:.0%}", True, GOLD)
                 frame.blit(pct, (px + 146 - pct.get_width(), y))
 
-        if msg_timer > 0 and state == "play":
+        if msg_timer > 0 and state == "play" and effect_msg:
             msg_timer -= 1
             scale = 1 + max(0, msg_timer - 75) * 0.04      # pops in, then settles
             m = big.render(effect_msg, True, GOLD)
