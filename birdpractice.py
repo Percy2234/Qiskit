@@ -44,6 +44,7 @@ SPEED_STEP = 0.08      # extra speed per pipe passed
 FLIP_SLOW = 0.7        # world moves slower while upside down
 FLIP_GRAVITY = 0.7     # gravity is weaker while upside down (easier to control)
 ORB_CHANCE = 0.35      # chance a pipe has a power-up orb
+FIRST_PIPE_X = 680     # where the first pipe starts (smaller = reach it sooner)
 PIPE_GAP = 170
 PIPE_W = 80
 PIPE_SPACING = 300
@@ -339,7 +340,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     best = 0
 
     def new_game():
-        return Bird(), [Pipe(W + 200 + i * PIPE_SPACING, allow_orb=i >= 2) for i in range(4)], 0
+        return Bird(), [Pipe(FIRST_PIPE_X + i * PIPE_SPACING, allow_orb=i >= 2) for i in range(4)], 0
 
     bird, pipes, score = new_game()
     last_bits, effect_msg, badges = "---", "", []
