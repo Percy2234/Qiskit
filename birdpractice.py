@@ -43,6 +43,10 @@ MAX_SPEED = 4.8        # ...and speeds up to this
 SPEED_STEP = 0.08      # extra speed per pipe passed
 FLIP_SLOW = 0.7        # world moves slower while upside down
 FLIP_GRAVITY = 0.7     # gravity is weaker while upside down (easier to control)
+FLIP_RAMP = 30         # frames (0.5 s) for gravity to fade back in after a flip
+FLIP_WARN = 60         # frames (1 s) the GRAVITY UP / DOWN warning stays on screen
+FLIP_GAP = 230         # wider gap on the first pipe after turning upside down
+INTRO_FRAMES = 150     # 2.5 s "TEAM JORDAN presents" splash at launch
 ORB_CHANCE = 0.35      # chance a pipe has a power-up orb
 FIRST_PIPE_X = 680     # where the first pipe starts (smaller = reach it sooner)
 PIPE_GAP = 170
@@ -175,7 +179,17 @@ class Bird:
         self.vy = 0.0
         self.r = 20
         self.flipped = False
+        self.flip_ramp = 0     # counts down after a flip; gravity fades in as it reaches 0
         self.trail = []
+
+    def set_flipped(self, flipped):
+        """Change gravity direction smoothly: stop the bird, then fade gravity back in."""
+        if flipped != self.flipped:
+            self.flipped = flipped
+            self.vy = 0.0
+            self.flip_ramp = FLIP_RAMP
+            return True
+        return False
 
     def gravity_factor(self):
         """Weaker gravity while upside down."""
@@ -187,7 +201,10 @@ class Bird:
         self.vy = -f if self.flipped else f
 
     def update(self):
-        g = GRAVITY * self.gravity_factor() * (-1 if self.flipped else 1)
+        ramp = 1.0 - self.flip_ramp / FLIP_RAMP          # 0 right after a flip -> 1 after 0.5 s
+        if self.flip_ramp > 0:
+            self.flip_ramp -= 1
+        g = GRAVITY * self.gravity_factor() * ramp * (-1 if self.flipped else 1)
         self.vy += g
         self.vy = max(-11, min(11, self.vy))
         self.y += self.vy
@@ -265,6 +282,7 @@ class Pipe:
         self.x = x
         self.gap_y = random.randint(130, H - GROUND_H - 130)
         self.passed = False
+        self.gap = PIPE_GAP
         self.orb = allow_orb and random.random() < ORB_CHANCE
 
     def orb_pos(self):
@@ -291,8 +309,8 @@ class Pipe:
         surf.blit(q, q.get_rect(center=(ox, oy)))
 
     def rects(self):
-        top = pygame.Rect(self.x, 0, PIPE_W, self.gap_y - PIPE_GAP // 2)
-        bot_y = self.gap_y + PIPE_GAP // 2
+        top = pygame.Rect(self.x, 0, PIPE_W, self.gap_y - self.gap // 2)
+        bot_y = self.gap_y + self.gap // 2
         bot = pygame.Rect(self.x, bot_y, PIPE_W, H - GROUND_H - bot_y)
         return top, bot
 
@@ -336,17 +354,19 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     theta_flip = np.pi / 2   # upside down 50%
     theta_speed = np.pi / 2  # speed change 50%
 
-    state = "play" if start_playing else "title"   # title -> play -> over -> title
+    state = "play" if start_playing else "intro"   # intro -> title -> play -> over -> title
+    intro_timer = 0
     best = 0
 
     def new_game():
-        return Bird(), [Pipe(FIRST_PIPE_X + i * PIPE_SPACING, allow_orb=i >= 2) for i in range(4)], 0
+        return Bird(), [Pipe(FIRST_PIPE_X + i * PIPE_SPACING, allow_orb=i >= 1) for i in range(4)], 0
 
     bird, pipes, score = new_game()
     last_bits, effect_msg, badges = "---", "", []
     speed_mult = 1.0
     shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
     held = None            # stored power-up: (bits, name, colour), used with X
+    flip_warn = 0          # frames left to show the gravity warning
     msg_timer = 0
     particles = []
     shake = 0
@@ -361,6 +381,9 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             if e.type == pygame.QUIT:
                 pygame.quit()
                 return
+            if e.type == pygame.KEYDOWN and state == "intro":
+                state = "title"          # any key skips the intro
+                continue
             if e.type == pygame.KEYDOWN:
                 if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state == "title":
                     bird, pipes, score = new_game()
@@ -369,6 +392,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
                     held = None
                     msg_timer, flash, shake = 0, 0, 0    # clear leftovers from the last game
+                    flip_warn = 0
                     particles = []
                     state = "play"
                     bird.flap()
@@ -408,7 +432,12 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
         if state != "over":
             scroll += speed
 
-        if state == "title":
+        if state == "intro":
+            intro_timer += 1
+            if intro_timer > INTRO_FRAMES:
+                state = "title"
+
+        if state in ("intro", "title"):
             # bird bobs gently on the title screen
             bird.y = H * 0.48 + math.sin(t * 0.06) * 18
             bird.flipped = False
@@ -439,7 +468,13 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     else:
                         qc = build_circuit(theta_flip, theta_speed)
                         last_bits, q = measure_once(qc)
-                    bird.flipped = q[0]
+                    if bird.set_flipped(q[0]):
+                        flip_warn = FLIP_WARN
+                        if bird.flipped:
+                            # give the next pipe a wider gap while the player adapts
+                            nxt_pipe = next((pp for pp in pipes if not pp.passed), None)
+                            if nxt_pipe:
+                                nxt_pipe.gap = FLIP_GAP
                     speed_mult = (1.6 if q[2] else 0.55) if q[1] else 1.0
                     badges = []
                     if q[0]:
@@ -527,7 +562,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             pts.append((W, H - GROUND_H))
             pygame.draw.polygon(frame, col, pts)
 
-        if state != "title":
+        if state in ("play", "over"):
             for p in pipes:
                 p.draw(frame)
             for p in pipes:
@@ -541,6 +576,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 pygame.draw.line(frame, WHITE, (x, y), (x + 70, y), 2)
 
         bird.draw(frame, t, ghost=ghost_timer > 0, shield=shield)
+
         for pt in particles:
             pt.draw(frame)
 
@@ -555,6 +591,20 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
         pygame.draw.line(frame, (60, 120, 40), (0, gy), (W, gy), 3)
 
         # -------- screens --------
+        if state == "intro":
+            # fade in, hold, fade out
+            k = intro_timer / INTRO_FRAMES
+            alpha = min(1.0, k * 4, (1 - k) * 4)
+            veil = pygame.Surface((W, H))
+            veil.fill(INK)
+            veil.set_alpha(int(255 * (0.55 + 0.45 * (1 - k))))
+            frame.blit(veil, (0, 0))
+            layer = pygame.Surface((W, H), pygame.SRCALPHA)
+            outlined(layer, huge, "TEAM JORDAN", (W // 2, H // 2 - 20), GOLD, INK, 5)
+            text(layer, font, "presents", (W // 2, H // 2 + 50), (230, 220, 255))
+            layer.set_alpha(int(255 * max(0.0, alpha)))
+            frame.blit(layer, (0, 0))
+
         if state == "title":
             veil = pygame.Surface((W, H), pygame.SRCALPHA)
             veil.fill((20, 10, 50, 90))
@@ -567,6 +617,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             text(frame, small, "SPACE = flap    X = use power-up    Every pipe is a quantum measurement",
                  (W // 2, 420), WHITE)
             text(frame, small, f"Best: {best}", (W // 2, 450), GOLD)
+            text(frame, small, "made by TEAM JORDAN", (W - 120, H - 22), (240, 235, 255))
 
         if state in ("play", "over"):
             outlined(frame, big, str(score), (W // 2, 45), WHITE, INK, 3)
@@ -626,6 +677,15 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             m = pygame.transform.rotozoom(m, 0, scale * fit)
             m.set_alpha(min(255, msg_timer * 6))
             frame.blit(m, m.get_rect(center=(W // 2, H // 2 - 70)))
+
+        # big gravity warning right after a flip (drawn on top of everything)
+        if flip_warn > 0 and state == "play":
+            flip_warn -= 1
+            label = "\u2191 GRAVITY UP \u2191" if bird.flipped else "\u2193 GRAVITY DOWN \u2193"
+            col = (255, 240, 120) if bird.flipped else (200, 240, 255)
+            wy = bird.y + (55 if bird.flipped else -55)          # opposite side to where it falls
+            if (flip_warn // 6) % 2 == 0 or flip_warn > FLIP_WARN - 20:
+                outlined(frame, font, label, (bird.x + 20, wy), col, INK, 3)
 
         if state == "over":
             veil = pygame.Surface((W, H), pygame.SRCALPHA)
