@@ -1,0 +1,526 @@
+"""
+Qubird - a bird game where a quantum circuit decides the effects
+Every time the bird passes a pipe, a 5-qubit circuit is measured once.
+Each effect has its own qubit, so several effects can stack at once.
+  q0 = 1  -> upside down (gravity flips, bird falls UP)
+  q1 = 1  -> horizontal speed changes
+  q2      -> 0 = slower, 1 = faster (50:50 via H gate)
+  q3 = 1  -> gravity strength changes
+  q4      -> 0 = light (floaty), 1 = heavy (50:50 via H gate)
+
+Controls
+  ENTER         : start game
+  SPACE / click : flap
+  E             : toggle entanglement mode (CX links q0 and q1)
+  1 / 2         : lower / raise upside-down probability
+  3 / 4         : lower / raise speed-change probability
+  5 / 6         : lower / raise gravity-strength probability
+  R             : back to title after game over
+"""
+import math
+import random
+
+import numpy as np
+import pygame
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import Statevector
+
+# ---------------- Settings ----------------
+W, H = 960, 540
+GROUND_H = 70
+FPS = 60
+GRAVITY = 0.45
+FLAP = -8.0
+BASE_SPEED = 3.2
+PIPE_GAP = 170
+PIPE_W = 80
+PIPE_SPACING = 300
+
+# colours
+SKY_TOP, SKY_BOT = (70, 160, 240), (190, 235, 255)
+FLIP_TOP, FLIP_BOT = (90, 40, 170), (230, 160, 240)      # sky while upside down
+PIPE_LIGHT, PIPE_MID, PIPE_DARK = (140, 225, 110), (80, 175, 70), (40, 110, 40)
+BIRD = (150, 110, 230)                                   # original purple qubit bird
+BIRD_DARK = (100, 70, 190)
+GOLD = (255, 215, 70)
+WHITE = (255, 255, 255)
+INK = (30, 25, 60)
+
+
+# ---------------- Quantum part ----------------
+def build_circuit(theta_flip, theta_speed, theta_grav, entangled):
+    """Circuit that decides the effects. Angles set the probabilities (P(1) = sin^2(theta/2))."""
+    qc = QuantumCircuit(5)
+    qc.ry(theta_flip, 0)
+    if entangled:
+        qc.cx(0, 1)  # q1 follows q0 -> flip and speed change always happen together
+    else:
+        qc.ry(theta_speed, 1)
+    qc.h(2)          # slower / faster 50:50
+    qc.ry(theta_grav, 3)
+    qc.h(4)          # light / heavy 50:50
+    return qc
+
+
+def measure_once(qc):
+    """Measure the circuit once. Qiskit bit order: rightmost character is q0."""
+    counts = Statevector(qc).sample_counts(shots=1)
+    bits = next(iter(counts))  # e.g. '01101' (q4 q3 q2 q1 q0)
+    q = [bits[-1 - i] == "1" for i in range(len(bits))]  # q[0] = q0, q[1] = q1, ...
+    return bits, q
+
+
+def prob_one(theta):
+    return math.sin(theta / 2) ** 2
+
+
+# ---------------- Drawing helpers ----------------
+def gradient(top, bot, w=W, h=H):
+    surf = pygame.Surface((w, h))
+    for y in range(h):
+        k = y / h
+        c = [int(top[i] + (bot[i] - top[i]) * k) for i in range(3)]
+        pygame.draw.line(surf, c, (0, y), (w, y))
+    return surf
+
+
+def text(surf, font, msg, pos, color=WHITE, center=True, shadow=True):
+    """Text with a soft drop shadow so it stands out on any background."""
+    if shadow:
+        s = font.render(msg, True, (20, 15, 50))
+        r = s.get_rect(center=pos) if center else s.get_rect(topleft=pos)
+        s.set_alpha(140)
+        surf.blit(s, r.move(3, 3))
+    t = font.render(msg, True, color)
+    r = t.get_rect(center=pos) if center else t.get_rect(topleft=pos)
+    surf.blit(t, r)
+
+
+def outlined(surf, font, msg, pos, color, outline=INK, w=3):
+    """Chunky outlined title text."""
+    base = font.render(msg, True, outline)
+    r = base.get_rect(center=pos)
+    for dx in range(-w, w + 1):
+        for dy in range(-w, w + 1):
+            if dx * dx + dy * dy <= w * w:
+                surf.blit(base, r.move(dx, dy))
+    surf.blit(font.render(msg, True, color), r)
+
+
+def draw_cloud(surf, x, y, s, alpha=230):
+    c = pygame.Surface((int(140 * s), int(70 * s)), pygame.SRCALPHA)
+    for dx, dy, r in [(30, 45, 25), (60, 32, 32), (95, 42, 26), (75, 50, 22), (45, 52, 20)]:
+        pygame.draw.circle(c, (255, 255, 255, alpha), (int(dx * s), int(dy * s)), int(r * s))
+    surf.blit(c, (x, y))
+
+
+# ---------------- Game objects ----------------
+class Particle:
+    def __init__(self, x, y, color, speed=4, life=40, size=4):
+        a = random.uniform(0, math.tau)
+        v = random.uniform(1, speed)
+        self.x, self.y = x, y
+        self.vx, self.vy = math.cos(a) * v, math.sin(a) * v
+        self.color, self.life, self.max_life, self.size = color, life, life, size
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.vx *= 0.95
+        self.vy *= 0.95
+        self.life -= 1
+
+    def draw(self, surf):
+        k = self.life / self.max_life
+        r = max(1, int(self.size * k))
+        glow = pygame.Surface((r * 6, r * 6), pygame.SRCALPHA)
+        pygame.draw.circle(glow, (*self.color, int(70 * k)), (r * 3, r * 3), r * 3)
+        pygame.draw.circle(glow, (*self.color, int(255 * k)), (r * 3, r * 3), r)
+        surf.blit(glow, (self.x - r * 3, self.y - r * 3))
+
+
+class Bird:
+    def __init__(self):
+        self.x = W * 0.28
+        self.y = H * 0.45
+        self.vy = 0.0
+        self.r = 20
+        self.flipped = False
+        self.grav_mult = 1.0
+        self.trail = []
+
+    def flap(self):
+        # scale flap with gravity so jump height stays similar (heavy = snappy, floaty = slow-motion)
+        f = FLAP * math.sqrt(self.grav_mult)
+        self.vy = -f if self.flipped else f
+
+    def update(self):
+        g = GRAVITY * self.grav_mult * (-1 if self.flipped else 1)
+        self.vy += g
+        self.vy = max(-11, min(11, self.vy))
+        self.y += self.vy
+        self.trail.append((self.x, self.y))
+        self.trail = self.trail[-14:]
+
+    def rect(self):
+        return pygame.Rect(self.x - self.r + 4, self.y - self.r + 4, 2 * self.r - 8, 2 * self.r - 8)
+
+    def draw(self, surf, t):
+        # glowing quantum trail
+        n = len(self.trail)
+        for i, (tx, ty) in enumerate(self.trail[:-1]):
+            k = i / n
+            s = pygame.Surface((30, 30), pygame.SRCALPHA)
+            pygame.draw.circle(s, (200, 170, 255, int(120 * k)), (15, 15), int(3 + 9 * k))
+            surf.blit(s, (tx - 15 - (n - i) * 2, ty - 15))
+
+        body = pygame.Surface((90, 90), pygame.SRCALPHA)
+        cx, cy, r = 45, 45, self.r
+        # soft glow
+        pygame.draw.circle(body, (200, 170, 255, 60), (cx, cy), r + 10)
+        # body + belly highlight
+        pygame.draw.circle(body, BIRD_DARK, (cx, cy), r + 3)
+        pygame.draw.circle(body, BIRD, (cx, cy), r)
+        pygame.draw.ellipse(body, (205, 185, 255), (cx - 10, cy + 2, 22, 14))
+        pygame.draw.circle(body, (220, 205, 255), (cx - 7, cy - 9), 5)
+        # wing (flapping)
+        flap = math.sin(t * 0.4) * 7
+        pygame.draw.ellipse(body, BIRD_DARK, (cx - 21, cy - 4 + flap, 22, 13))
+        pygame.draw.ellipse(body, (225, 210, 255), (cx - 19, cy - 3 + flap, 18, 9))
+        # eye
+        pygame.draw.circle(body, WHITE, (cx + 9, cy - 7), 8)
+        pygame.draw.circle(body, INK, (cx + 11, cy - 7), 4)
+        pygame.draw.circle(body, WHITE, (cx + 12, cy - 9), 1)
+        # cheek
+        pygame.draw.circle(body, (255, 150, 190), (cx + 6, cy + 4), 4)
+        # beak
+        pygame.draw.polygon(body, (255, 170, 40), [(cx + 16, cy - 1), (cx + 31, cy + 3), (cx + 16, cy + 8)])
+        pygame.draw.polygon(body, (220, 120, 20), [(cx + 16, cy + 4), (cx + 31, cy + 3), (cx + 16, cy + 8)])
+        # |psi> antenna with a glowing tip
+        pygame.draw.line(body, BIRD_DARK, (cx, cy - r), (cx + 5, cy - r - 11), 3)
+        glow = 4 + math.sin(t * 0.2) * 1.5
+        pygame.draw.circle(body, (255, 240, 150), (cx + 5, cy - r - 12), int(glow + 3))
+        pygame.draw.circle(body, GOLD, (cx + 5, cy - r - 12), int(glow))
+
+        angle = max(-30, min(60, self.vy * 4 * (-1 if self.flipped else 1)))
+        body = pygame.transform.rotate(body, -angle)
+        if self.flipped:
+            body = pygame.transform.flip(body, False, True)
+        surf.blit(body, body.get_rect(center=(self.x, self.y)))
+
+
+class Pipe:
+    def __init__(self, x):
+        self.x = x
+        self.gap_y = random.randint(130, H - GROUND_H - 130)
+        self.passed = False
+
+    def rects(self):
+        top = pygame.Rect(self.x, 0, PIPE_W, self.gap_y - PIPE_GAP // 2)
+        bot_y = self.gap_y + PIPE_GAP // 2
+        bot = pygame.Rect(self.x, bot_y, PIPE_W, H - GROUND_H - bot_y)
+        return top, bot
+
+    @staticmethod
+    def shaded_rect(surf, r):
+        """Vertical colour bands give the pipe a rounded, shiny look."""
+        if r.h <= 0:
+            return
+        bands = [(0.0, PIPE_DARK), (0.08, PIPE_MID), (0.25, PIPE_LIGHT), (0.38, (190, 245, 160)),
+                 (0.48, PIPE_LIGHT), (0.7, PIPE_MID), (0.9, PIPE_DARK)]
+        for i, (k, c) in enumerate(bands):
+            x0 = r.x + int(r.w * k)
+            x1 = r.x + int(r.w * (bands[i + 1][0] if i + 1 < len(bands) else 1))
+            pygame.draw.rect(surf, c, (x0, r.y, x1 - x0, r.h))
+        pygame.draw.rect(surf, (25, 70, 25), r, 3)
+
+    def draw(self, surf):
+        top, bot = self.rects()
+        for r, is_top in ((top, True), (bot, False)):
+            self.shaded_rect(surf, r)
+            cap = pygame.Rect(r.x - 7, r.bottom - 28 if is_top else r.y, PIPE_W + 14, 28)
+            self.shaded_rect(surf, cap)
+
+
+# ---------------- Main ----------------
+def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
+    pygame.init()
+    screen = pygame.display.set_mode((W, H))
+    pygame.display.set_caption("Qubird - Quantum Flight")
+    clock = pygame.time.Clock()
+    small = pygame.font.SysFont("arial", 18, bold=True)
+    font = pygame.font.SysFont("arial", 22, bold=True)
+    big = pygame.font.SysFont("arial", 52, bold=True)
+    huge = pygame.font.SysFont("arial", 96, bold=True)
+
+    sky_normal = gradient(SKY_TOP, SKY_BOT)
+    sky_flip = gradient(FLIP_TOP, FLIP_BOT)
+    stars = [(random.randint(0, W), random.randint(0, H - 200), random.random()) for _ in range(60)]
+    clouds = [[random.randint(0, W), random.randint(20, 220), random.uniform(0.6, 1.3)] for _ in range(6)]
+
+    theta_flip = np.pi / 2   # upside down 50%
+    theta_speed = np.pi / 2  # speed change 50%
+    theta_grav = np.pi / 2   # gravity strength change 50%
+    entangled = False
+
+    state = "play" if start_playing else "title"   # title -> play -> over -> title
+    best = 0
+
+    def new_game():
+        return Bird(), [Pipe(W + 200 + i * PIPE_SPACING) for i in range(4)], 0
+
+    bird, pipes, score = new_game()
+    last_bits, effect_msg, badges = "-----", "", []
+    speed_mult = 1.0
+    msg_timer = 0
+    particles = []
+    shake = 0
+    flash = 0
+    t = 0
+    scroll = 0.0
+
+    while True:
+        t += 1
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT:
+                pygame.quit()
+                return
+            if e.type == pygame.KEYDOWN:
+                if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state == "title":
+                    bird, pipes, score = new_game()
+                    last_bits, effect_msg, badges = "-----", "", []
+                    speed_mult = 1.0
+                    particles = []
+                    state = "play"
+                    bird.flap()
+                elif e.key == pygame.K_SPACE and state == "play":
+                    bird.flap()
+                    for _ in range(5):
+                        particles.append(Particle(bird.x - 15, bird.y, (230, 220, 255), 2, 20, 3))
+                elif e.key == pygame.K_r and state == "over":
+                    state = "title"
+                elif e.key == pygame.K_e:
+                    entangled = not entangled
+                elif e.key == pygame.K_1:
+                    theta_flip = max(0, theta_flip - np.pi / 12)
+                elif e.key == pygame.K_2:
+                    theta_flip = min(np.pi, theta_flip + np.pi / 12)
+                elif e.key == pygame.K_3:
+                    theta_speed = max(0, theta_speed - np.pi / 12)
+                elif e.key == pygame.K_4:
+                    theta_speed = min(np.pi, theta_speed + np.pi / 12)
+                elif e.key == pygame.K_5:
+                    theta_grav = max(0, theta_grav - np.pi / 12)
+                elif e.key == pygame.K_6:
+                    theta_grav = min(np.pi, theta_grav + np.pi / 12)
+            if e.type == pygame.MOUSEBUTTONDOWN and state == "play":
+                bird.flap()
+
+        speed = BASE_SPEED * (speed_mult if state == "play" else 0.6)
+        if state != "over":
+            scroll += speed
+
+        if state == "title":
+            # bird bobs gently on the title screen
+            bird.y = H * 0.48 + math.sin(t * 0.06) * 18
+            bird.flipped = False
+            bird.trail = []
+
+        if state == "play":
+            # autoplay (for testing)
+            if autoplay:
+                nxt = next(p for p in pipes if p.x + PIPE_W > bird.x - bird.r)
+                target = nxt.gap_y + (-30 if bird.flipped else 30)
+                if (not bird.flipped and bird.y > target and bird.vy > 0) or \
+                   (bird.flipped and bird.y < target and bird.vy < 0):
+                    bird.flap()
+
+            bird.update()
+            for p in pipes:
+                p.x -= speed
+                if not p.passed and p.x + PIPE_W < bird.x:
+                    p.passed = True
+                    score += 1
+                    # passed a pipe -> quantum measurement
+                    qc = build_circuit(theta_flip, theta_speed, theta_grav, entangled)
+                    last_bits, q = measure_once(qc)
+                    bird.flipped = q[0]
+                    speed_mult = (1.6 if q[2] else 0.55) if q[1] else 1.0
+                    bird.grav_mult = (1.6 if q[4] else 0.5) if q[3] else 1.0
+                    badges = []
+                    if q[0]:
+                        badges.append(("UPSIDE DOWN", (110, 50, 180)))
+                    if q[1]:
+                        badges.append(("FAST", (230, 80, 70)) if q[2] else ("SLOW", (60, 140, 230)))
+                    if q[3]:
+                        badges.append(("HEAVY", (120, 90, 60)) if q[4] else ("FLOATY", (40, 170, 150)))
+                    effect_msg = " + ".join(b[0] for b in badges) if badges else "NORMAL"
+                    msg_timer = 90
+                    flash = 10
+                    # quantum sparkle burst
+                    for _ in range(30):
+                        particles.append(Particle(bird.x, bird.y, random.choice(
+                            [(200, 160, 255), GOLD, (120, 220, 255)]), 6, 45, 5))
+            if pipes[0].x < -PIPE_W - 20:
+                pipes.pop(0)
+                pipes.append(Pipe(pipes[-1].x + PIPE_SPACING))
+
+            br = bird.rect()
+            hit = bird.y - bird.r < 0 or bird.y + bird.r > H - GROUND_H
+            hit = hit or any(br.colliderect(r) for p in pipes for r in p.rects())
+            if hit:
+                state = "over"
+                best = max(best, score)
+                shake = 18
+                for _ in range(40):
+                    particles.append(Particle(bird.x, bird.y, random.choice([BIRD, WHITE, GOLD]), 7, 50, 6))
+
+        for pt in particles:
+            pt.update()
+        particles = [pt for pt in particles if pt.life > 0]
+
+        # ---------------- Drawing ----------------
+        frame = pygame.Surface((W, H))
+        frame.blit(sky_flip if bird.flipped else sky_normal, (0, 0))
+
+        # twinkling stars while upside down
+        if bird.flipped:
+            for sx, sy, ph in stars:
+                a = int(150 + 100 * math.sin(t * 0.08 + ph * 10))
+                s = pygame.Surface((6, 6), pygame.SRCALPHA)
+                pygame.draw.circle(s, (255, 255, 255, a), (3, 3), 2)
+                frame.blit(s, (sx, sy))
+
+        # parallax clouds
+        for c in clouds:
+            if state != "over":
+                c[0] -= speed * 0.25 * c[2]
+            if c[0] < -160:
+                c[0], c[1] = W + random.randint(0, 200), random.randint(20, 220)
+            draw_cloud(frame, c[0], c[1], c[2], 200 if not bird.flipped else 110)
+
+        # parallax hills (far + near)
+        for col, base, amp, wl, k in [((140, 205, 150), H - GROUND_H - 110, 40, 260, 0.2),
+                                       ((95, 185, 95), H - GROUND_H - 50, 30, 180, 0.45)]:
+            pts = [(0, H - GROUND_H)]
+            for x in range(0, W + 21, 20):
+                pts.append((x, base + math.sin((x + scroll * k) / wl * math.tau) * amp))
+            pts.append((W, H - GROUND_H))
+            pygame.draw.polygon(frame, col, pts)
+
+        if state != "title":
+            for p in pipes:
+                p.draw(frame)
+
+        # speed lines while FAST
+        if speed_mult > 1 and state == "play":
+            for i in range(10):
+                y = (i * 53 + t * 7) % (H - GROUND_H)
+                x = W - (t * 30 + i * 131) % (W + 200)
+                pygame.draw.line(frame, WHITE, (x, y), (x + 70, y), 2)
+
+        bird.draw(frame, t)
+        for pt in particles:
+            pt.draw(frame)
+
+        # ground with scrolling stripes
+        gy = H - GROUND_H
+        pygame.draw.rect(frame, (222, 210, 150), (0, gy, W, GROUND_H))
+        pygame.draw.rect(frame, (100, 185, 60), (0, gy, W, 18))
+        off = int(scroll) % 40
+        for x in range(-40, W + 40, 40):
+            pygame.draw.polygon(frame, (75, 155, 45),
+                                [(x - off, gy + 18), (x - off + 20, gy), (x - off + 40, gy), (x - off + 20, gy + 18)])
+        pygame.draw.line(frame, (60, 120, 40), (0, gy), (W, gy), 3)
+
+        # -------- screens --------
+        if state == "title":
+            veil = pygame.Surface((W, H), pygame.SRCALPHA)
+            veil.fill((20, 10, 50, 90))
+            frame.blit(veil, (0, 0))
+            bob = math.sin(t * 0.05) * 6
+            outlined(frame, huge, "QUBIRD", (W // 2, 120 + bob), GOLD, INK, 5)
+            text(frame, font, "a quantum flight", (W // 2, 190 + bob), (230, 220, 255))
+            if (t // 30) % 2 == 0:
+                outlined(frame, big, "PRESS ENTER", (W // 2, 360), WHITE, INK, 3)
+            text(frame, small, "SPACE / click = flap      Every pipe is a quantum measurement",
+                 (W // 2, 420), WHITE)
+            text(frame, small, f"Best: {best}", (W // 2, 450), GOLD)
+
+        if state in ("play", "over"):
+            outlined(frame, big, str(score), (W // 2, 45), WHITE, INK, 3)
+
+            # active effects stay on screen until the next pipe
+            bx = W // 2 - sum(font.size(b[0])[0] + 34 for b in badges) // 2
+            for label, color in badges:
+                w = font.size(label)[0] + 24
+                pygame.draw.rect(frame, (20, 15, 50), (bx + 2, 84, w, 34), border_radius=17)
+                pygame.draw.rect(frame, color, (bx, 80, w, 34), border_radius=17)
+                pygame.draw.rect(frame, WHITE, (bx, 80, w, 34), 2, border_radius=17)
+                frame.blit(font.render(label, True, WHITE), (bx + 12, 85))
+                bx += w + 10
+
+            # quantum info panel (bottom-right, where the bird never flies)
+            px, py = W - 312, H - GROUND_H - 184
+            panel = pygame.Surface((300, 172), pygame.SRCALPHA)
+            pygame.draw.rect(panel, (25, 15, 60, 170), panel.get_rect(), border_radius=14)
+            pygame.draw.rect(panel, (180, 150, 255, 200), panel.get_rect(), 2, border_radius=14)
+            frame.blit(panel, (px, py))
+            frame.blit(font.render(f"Measured |{last_bits}>", True, GOLD), (px + 14, py + 8))
+            rows = [("Flip", prob_one(theta_flip), "1/2"),
+                    ("Speed", prob_one(theta_flip if entangled else theta_speed), "3/4"),
+                    ("Gravity", prob_one(theta_grav), "5/6")]
+            for i, (name, pval, keys) in enumerate(rows):
+                y = py + 46 + i * 28
+                frame.blit(small.render(name, True, WHITE), (px + 14, y))
+                pygame.draw.rect(frame, (70, 55, 120), (px + 93, y + 4, 110, 12), border_radius=6)
+                pygame.draw.rect(frame, (160, 120, 255), (px + 93, y + 4, int(110 * pval), 12), border_radius=6)
+                frame.blit(small.render(f"{pval:.0%} [{keys}]", True, (220, 210, 255)), (px + 210, y))
+            ent_col = (120, 255, 180) if entangled else (180, 170, 210)
+            frame.blit(small.render(f"Entangle (CX): {'ON' if entangled else 'OFF'}  [E]", True, ent_col), (px + 14, py + 136))
+
+        if msg_timer > 0 and state == "play":
+            msg_timer -= 1
+            scale = 1 + max(0, msg_timer - 75) * 0.04      # pops in, then settles
+            m = big.render(effect_msg, True, GOLD)
+            fit = min(1.0, (W - 80) / m.get_width())           # long combos shrink to fit
+            m = pygame.transform.rotozoom(m, 0, scale * fit)
+            m.set_alpha(min(255, msg_timer * 6))
+            frame.blit(m, m.get_rect(center=(W // 2, H // 2 - 70)))
+
+        if state == "over":
+            veil = pygame.Surface((W, H), pygame.SRCALPHA)
+            veil.fill((20, 10, 50, 120))
+            frame.blit(veil, (0, 0))
+            outlined(frame, huge, "GAME OVER", (W // 2, H // 2 - 30), (255, 110, 120), INK, 5)
+            text(frame, font, f"Score {score}   Best {best}", (W // 2, H // 2 + 40), GOLD)
+            if (t // 30) % 2 == 0:
+                text(frame, font, "Press R", (W // 2, H // 2 + 80), WHITE)
+
+        # white flash when the circuit is measured
+        if flash > 0:
+            fl = pygame.Surface((W, H), pygame.SRCALPHA)
+            fl.fill((255, 255, 255, flash * 12))
+            frame.blit(fl, (0, 0))
+            flash -= 1
+
+        # screen shake on crash
+        ox = oy = 0
+        if shake > 0:
+            ox, oy = random.randint(-shake, shake), random.randint(-shake, shake)
+            shake -= 1
+        screen.fill(INK)
+        screen.blit(frame, (ox, oy))
+
+        pygame.display.flip()
+        clock.tick(FPS if not max_frames else 0)
+
+        if max_frames and t >= max_frames:
+            if screenshot:
+                pygame.image.save(screen, screenshot)
+            pygame.quit()
+            return score
+
+
+if __name__ == "__main__":
+    main()
