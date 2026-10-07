@@ -22,7 +22,6 @@ Power-ups (glowing orbs in some pipe gaps)
 Controls
   ENTER         : start game
   SPACE / click : flap
-  E             : toggle entanglement mode (CX links q0 and q1)
   1 / 2         : lower / raise upside-down probability
   3 / 4         : lower / raise speed-change probability
   5 / 6         : lower / raise gravity-strength probability
@@ -64,14 +63,11 @@ INK = (30, 25, 60)
 
 
 # ---------------- Quantum part ----------------
-def build_circuit(theta_flip, theta_speed, theta_grav, entangled):
+def build_circuit(theta_flip, theta_speed, theta_grav):
     """Circuit that decides the effects. Angles set the probabilities (P(1) = sin^2(theta/2))."""
     qc = QuantumCircuit(5)
     qc.ry(theta_flip, 0)
-    if entangled:
-        qc.cx(0, 1)  # q1 follows q0 -> flip and speed change always happen together
-    else:
-        qc.ry(theta_speed, 1)
+    qc.ry(theta_speed, 1)
     # q2 decides slower / faster, but ONLY gets an H gate when q0 = 0 (not upside down).
     # X-CH-X = "controlled on |0>": if the bird is upside down, q2 stays |0> -> never FAST.
     # The rule lives inside the circuit (q0 and q2 become entangled), not in an if-statement.
@@ -215,33 +211,44 @@ class Bird:
             pygame.draw.circle(s, (200, 170, 255, int(120 * k)), (15, 15), int(3 + 9 * k))
             surf.blit(s, (tx - 15 - (n - i) * 2, ty - 15))
 
-        body = pygame.Surface((90, 90), pygame.SRCALPHA)
-        cx, cy, r = 45, 45, self.r
-        # soft glow
-        pygame.draw.circle(body, (200, 170, 255, 60), (cx, cy), r + 10)
-        # body + belly highlight
-        pygame.draw.circle(body, BIRD_DARK, (cx, cy), r + 3)
-        pygame.draw.circle(body, BIRD, (cx, cy), r)
-        pygame.draw.ellipse(body, (205, 185, 255), (cx - 10, cy + 2, 22, 14))
-        pygame.draw.circle(body, (220, 205, 255), (cx - 7, cy - 9), 5)
-        # wing (flapping)
-        flap = math.sin(t * 0.4) * 7
-        pygame.draw.ellipse(body, BIRD_DARK, (cx - 21, cy - 4 + flap, 22, 13))
-        pygame.draw.ellipse(body, (225, 210, 255), (cx - 19, cy - 3 + flap, 18, 9))
-        # eye
-        pygame.draw.circle(body, WHITE, (cx + 9, cy - 7), 8)
-        pygame.draw.circle(body, INK, (cx + 11, cy - 7), 4)
-        pygame.draw.circle(body, WHITE, (cx + 12, cy - 9), 1)
-        # cheek
-        pygame.draw.circle(body, (255, 150, 190), (cx + 6, cy + 4), 4)
-        # beak
-        pygame.draw.polygon(body, (255, 170, 40), [(cx + 16, cy - 1), (cx + 31, cy + 3), (cx + 16, cy + 8)])
-        pygame.draw.polygon(body, (220, 120, 20), [(cx + 16, cy + 4), (cx + 31, cy + 3), (cx + 16, cy + 8)])
-        # |psi> antenna with a glowing tip
-        pygame.draw.line(body, BIRD_DARK, (cx, cy - r), (cx + 5, cy - r - 11), 3)
-        glow = 4 + math.sin(t * 0.2) * 1.5
-        pygame.draw.circle(body, (255, 240, 150), (cx + 5, cy - r - 12), int(glow + 3))
-        pygame.draw.circle(body, GOLD, (cx + 5, cy - r - 12), int(glow))
+        # ---- Quantum Falcon: angular body, swept wing, fierce eye, hooked beak ----
+        body = pygame.Surface((100, 100), pygame.SRCALPHA)
+        cx, cy, s = 48, 50, 1.3
+        dark, mid, light = (70, 40, 160), (130, 90, 225), (190, 160, 255)
+        lw = 2
+
+        def pts(points, dy=0.0):
+            return [(cx + x * s, cy + (y + dy) * s) for x, y in points]
+
+        # soft purple glow behind the bird
+        pygame.draw.circle(body, (200, 170, 255, 50), (cx, cy), 30)
+        # tail spikes
+        for d in (-6, 0, 6):
+            pygame.draw.polygon(body, dark, pts([(-14, d - 3), (-32, d * 1.8), (-14, d + 3)]))
+        # angular body + belly panel
+        shape = [(-16, -2), (-6, -14), (10, -14), (22, -6), (24, 2), (12, 12), (-6, 12)]
+        pygame.draw.polygon(body, mid, pts(shape))
+        pygame.draw.polygon(body, light, pts([(-4, 2), (12, 2), (8, 10), (-4, 10)]))
+        pygame.draw.polygon(body, INK, pts(shape), lw)
+        # swept wing that flaps up and down
+        wf = math.sin(t * 0.45) * 7
+        wing = [(-2, -4), (-26, -26 + wf), (-18, -6 + wf * 0.5), (-30, -10 + wf), (-12, 4)]
+        pygame.draw.polygon(body, dark, pts(wing))
+        pygame.draw.polygon(body, light, pts([(-4, -4), (-22, -20 + wf), (-14, -4 + wf * 0.3)]))
+        pygame.draw.polygon(body, INK, pts(wing), lw)
+        # fierce eye with slanted brow
+        pygame.draw.polygon(body, WHITE, pts([(8, -8), (18, -7), (16, -2), (8, -3)]))
+        pygame.draw.circle(body, INK, (cx + 14 * s, cy - 5 * s), 2.4)
+        pygame.draw.line(body, INK, (cx + 6 * s, cy - 11 * s), (cx + 19 * s, cy - 8 * s), 3)
+        # hooked beak
+        beak = [(22, -6), (34, -2), (30, 4), (24, 2)]
+        pygame.draw.polygon(body, (255, 180, 40), pts(beak))
+        pygame.draw.polygon(body, (210, 120, 20), pts([(24, 2), (30, 4), (26, 6)]))
+        pygame.draw.polygon(body, INK, pts(beak), 1)
+        # glowing gold crest (the |psi> antenna, now sharp)
+        crest_glow = 2 + math.sin(t * 0.2) * 1.5
+        pygame.draw.polygon(body, (255, 240, 150), pts([(-1, -14), (4, -26 - crest_glow), (9, -14)]))
+        pygame.draw.polygon(body, GOLD, pts([(0, -14), (4, -24), (8, -14)]))
 
         angle = max(-30, min(60, self.vy * 4 * (-1 if self.flipped else 1)))
         body = pygame.transform.rotate(body, -angle)
@@ -332,7 +339,6 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     theta_flip = np.pi / 2   # upside down 50%
     theta_speed = np.pi / 2  # speed change 50%
     theta_grav = np.pi / 2   # gravity strength change 50%
-    entangled = False
 
     state = "play" if start_playing else "title"   # title -> play -> over -> title
     best = 0
@@ -372,8 +378,6 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                         particles.append(Particle(bird.x - 15, bird.y, (230, 220, 255), 2, 20, 3))
                 elif e.key == pygame.K_r and state == "over":
                     state = "title"
-                elif e.key == pygame.K_e:
-                    entangled = not entangled
                 elif e.key == pygame.K_1:
                     theta_flip = max(0, theta_flip - np.pi / 12)
                 elif e.key == pygame.K_2:
@@ -426,7 +430,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                         collapse = False
                         last_bits, q = "00000", [False] * 5
                     else:
-                        qc = build_circuit(theta_flip, theta_speed, theta_grav, entangled)
+                        qc = build_circuit(theta_flip, theta_speed, theta_grav)
                         last_bits, q = measure_once(qc)
                     bird.flipped = q[0]
                     speed_mult = (1.6 if q[2] else 0.55) if q[1] else 1.0
@@ -601,23 +605,20 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 bx += w + 10
 
             # quantum info panel (bottom-right, where the bird never flies)
-            px, py = W - 312, H - GROUND_H - 184
-            panel = pygame.Surface((300, 172), pygame.SRCALPHA)
+            px, py = W - 312, H - GROUND_H - 112
+            panel = pygame.Surface((300, 100), pygame.SRCALPHA)
             pygame.draw.rect(panel, (25, 15, 60, 170), panel.get_rect(), border_radius=14)
             pygame.draw.rect(panel, (180, 150, 255, 200), panel.get_rect(), 2, border_radius=14)
             frame.blit(panel, (px, py))
-            frame.blit(font.render(f"Measured |{last_bits}>", True, GOLD), (px + 14, py + 8))
             rows = [("Flip", prob_one(theta_flip), "1/2"),
-                    ("Speed", prob_one(theta_flip if entangled else theta_speed), "3/4"),
+                    ("Speed", prob_one(theta_speed), "3/4"),
                     ("Gravity", prob_one(theta_grav), "5/6")]
             for i, (name, pval, keys) in enumerate(rows):
-                y = py + 46 + i * 28
+                y = py + 12 + i * 28
                 frame.blit(small.render(name, True, WHITE), (px + 14, y))
                 pygame.draw.rect(frame, (70, 55, 120), (px + 93, y + 4, 110, 12), border_radius=6)
                 pygame.draw.rect(frame, (160, 120, 255), (px + 93, y + 4, int(110 * pval), 12), border_radius=6)
                 frame.blit(small.render(f"{pval:.0%} [{keys}]", True, (220, 210, 255)), (px + 210, y))
-            ent_col = (120, 255, 180) if entangled else (180, 170, 210)
-            frame.blit(small.render(f"Entangle (CX): {'ON' if entangled else 'OFF'}  [E]", True, ent_col), (px + 14, py + 136))
 
         if msg_timer > 0 and state == "play":
             msg_timer -= 1
