@@ -13,7 +13,8 @@ Upside down also slows the world down (x0.7) to keep it fair.
 The game starts slow and speeds up a little with every pipe.
 
 Power-ups (glowing orbs in some pipe gaps)
-  Grabbing an orb measures a 2-qubit circuit H(0) H(1) -> 4 equally likely outcomes:
+  Grabbing an orb measures a 2-qubit circuit H(0) H(1) -> 4 equally likely outcomes.
+  The power-up is stored (one slot) and only used when you press X:
   |00> SHIELD    survive one pipe hit (quantum error correction!)
   |01> GHOST     pass through pipes for 4 seconds (tunnelling)
   |10> COLLAPSE  next pipe gives no effects (state collapses to |00000>)
@@ -22,9 +23,7 @@ Power-ups (glowing orbs in some pipe gaps)
 Controls
   ENTER         : start game
   SPACE / click : flap
-  1 / 2         : lower / raise upside-down probability
-  3 / 4         : lower / raise speed-change probability
-  5 / 6         : lower / raise gravity-strength probability
+  X             : use the stored power-up
   R             : back to title after game over
 """
 import math
@@ -350,6 +349,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     last_bits, effect_msg, badges = "-----", "", []
     speed_mult = 1.0
     shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
+    held = None            # stored power-up: (bits, name, colour), used with X
     msg_timer = 0
     particles = []
     shake = 0
@@ -357,6 +357,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     t = 0
     scroll = 0.0
 
+    use_power = False
     while True:
         t += 1
         for e in pygame.event.get():
@@ -369,6 +370,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     last_bits, effect_msg, badges = "-----", "", []
                     speed_mult = 1.0
                     shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
+                    held = None
                     particles = []
                     state = "play"
                     bird.flap()
@@ -378,20 +380,27 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                         particles.append(Particle(bird.x - 15, bird.y, (230, 220, 255), 2, 20, 3))
                 elif e.key == pygame.K_r and state == "over":
                     state = "title"
-                elif e.key == pygame.K_1:
-                    theta_flip = max(0, theta_flip - np.pi / 12)
-                elif e.key == pygame.K_2:
-                    theta_flip = min(np.pi, theta_flip + np.pi / 12)
-                elif e.key == pygame.K_3:
-                    theta_speed = max(0, theta_speed - np.pi / 12)
-                elif e.key == pygame.K_4:
-                    theta_speed = min(np.pi, theta_speed + np.pi / 12)
-                elif e.key == pygame.K_5:
-                    theta_grav = max(0, theta_grav - np.pi / 12)
-                elif e.key == pygame.K_6:
-                    theta_grav = min(np.pi, theta_grav + np.pi / 12)
+                elif e.key == pygame.K_x and state == "play" and held:
+                    use_power = True
             if e.type == pygame.MOUSEBUTTONDOWN and state == "play":
                 bird.flap()
+
+        # ---- use the stored power-up (X key) ----
+        if state == "play" and (use_power or (autoplay and held)) and held:
+            pbits, pname, pcol = held
+            held = None
+            if pname == "SHIELD":
+                shield = True
+            elif pname == "GHOST":
+                ghost_timer = FPS * 4
+            elif pname == "COLLAPSE":
+                collapse = True
+            else:
+                double_pipes = 5
+            effect_msg, msg_timer, flash = f"{pname} ON!", 70, 8
+            for _ in range(35):
+                particles.append(Particle(bird.x, bird.y, random.choice([pcol, WHITE]), 7, 50, 5))
+        use_power = False
 
         base_speed = min(MAX_SPEED, START_SPEED + score * SPEED_STEP)   # gets faster over time
         if state == "play":
@@ -460,15 +469,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     if (ox - bird.x) ** 2 + (oy - bird.y) ** 2 < (bird.r + 18) ** 2:
                         p.orb = False
                         pbits, (pname, pcol) = measure_powerup()
-                        if pname == "SHIELD":
-                            shield = True
-                        elif pname == "GHOST":
-                            ghost_timer = FPS * 4
-                        elif pname == "COLLAPSE":
-                            collapse = True
-                        else:
-                            double_pipes = 5
-                        effect_msg = f"POWER-UP |{pbits}> {pname}!"
+                        held = (pbits, pname, pcol)        # stored - press X to use (replaces old one)
+                        effect_msg = f"GOT {pname}!  press X"
                         msg_timer = 90
                         flash = 8
                         for _ in range(35):
@@ -567,7 +569,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             text(frame, font, "a quantum flight", (W // 2, 190 + bob), (230, 220, 255))
             if (t // 30) % 2 == 0:
                 outlined(frame, big, "PRESS ENTER", (W // 2, 360), WHITE, INK, 3)
-            text(frame, small, "SPACE / click = flap      Every pipe is a quantum measurement",
+            text(frame, small, "SPACE = flap    X = use power-up    Every pipe is a quantum measurement",
                  (W // 2, 420), WHITE)
             text(frame, small, f"Best: {best}", (W // 2, 450), GOLD)
 
@@ -576,6 +578,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
 
             # active power-ups + speed level (top-left)
             active = []
+            if held:
+                active.append((f"[X] {held[1]}", held[2]))
             if shield:
                 active.append(("SHIELD", POWERUPS["00"][1]))
             if ghost_timer > 0:
@@ -586,8 +590,9 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 active.append((f"x2 for {double_pipes}", POWERUPS["11"][1]))
             for i, (label, col) in enumerate(active):
                 w = small.size(label)[0] + 20
+                border = 2 + (1 if label.startswith("[X]") and (t // 15) % 2 else 0)   # stored one blinks
                 pygame.draw.rect(frame, (20, 15, 50), (14, 14 + i * 34, w, 28), border_radius=14)
-                pygame.draw.rect(frame, col, (14, 14 + i * 34, w, 28), 2, border_radius=14)
+                pygame.draw.rect(frame, col, (14, 14 + i * 34, w, 28), border, border_radius=14)
                 frame.blit(small.render(label, True, col), (24, 18 + i * 34))
             lvl = (base_speed - START_SPEED) / (MAX_SPEED - START_SPEED)
             text(frame, small, f"SPEED {base_speed:.1f}", (W - 14 - small.size("SPEED 0.0")[0], 14), WHITE, center=False)
@@ -605,20 +610,19 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 bx += w + 10
 
             # quantum info panel (bottom-right, where the bird never flies)
-            px, py = W - 312, H - GROUND_H - 112
-            panel = pygame.Surface((300, 100), pygame.SRCALPHA)
+            px, py = W - 172, H - GROUND_H - 112
+            panel = pygame.Surface((160, 100), pygame.SRCALPHA)
             pygame.draw.rect(panel, (25, 15, 60, 170), panel.get_rect(), border_radius=14)
             pygame.draw.rect(panel, (180, 150, 255, 200), panel.get_rect(), 2, border_radius=14)
             frame.blit(panel, (px, py))
-            rows = [("Flip", prob_one(theta_flip), "1/2"),
-                    ("Speed", prob_one(theta_speed), "3/4"),
-                    ("Gravity", prob_one(theta_grav), "5/6")]
-            for i, (name, pval, keys) in enumerate(rows):
+            rows = [("Flip", prob_one(theta_flip)),
+                    ("Speed", prob_one(theta_speed)),
+                    ("Gravity", prob_one(theta_grav))]
+            for i, (name, pval) in enumerate(rows):
                 y = py + 12 + i * 28
                 frame.blit(small.render(name, True, WHITE), (px + 14, y))
-                pygame.draw.rect(frame, (70, 55, 120), (px + 93, y + 4, 110, 12), border_radius=6)
-                pygame.draw.rect(frame, (160, 120, 255), (px + 93, y + 4, int(110 * pval), 12), border_radius=6)
-                frame.blit(small.render(f"{pval:.0%} [{keys}]", True, (220, 210, 255)), (px + 210, y))
+                pct = small.render(f"{pval:.0%}", True, GOLD)
+                frame.blit(pct, (px + 146 - pct.get_width(), y))
 
         if msg_timer > 0 and state == "play":
             msg_timer -= 1
