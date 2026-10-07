@@ -11,11 +11,10 @@ Upside down also slows the world down (x0.7) to keep it fair.
 The game starts slow and speeds up a little with every pipe.
 
 Power-ups (glowing orbs in some pipe gaps)
-  Grabbing an orb measures a 2-qubit circuit H(0) H(1) -> 4 equally likely outcomes.
-  The power-up is stored (one slot) and only used when you press X:
-  |00> SHIELD    survive one pipe hit (quantum error correction!)
-  |01> GHOST     pass through pipes for 4 seconds (tunnelling)
-  |10> COLLAPSE  next pipe gives no effects (state collapses to |000>)
+  Grabbing an orb measures a 2-qubit circuit RY(theta) + CH that splits into
+  exactly 3 outcomes, each 1/3. The power-up is stored (one slot) and used with X:
+  |00> SHIELD    survive one pipe hit (inspired by quantum error correction)
+  |01> GHOST     pass through pipes for 4 seconds (inspired by tunnelling)
   |11> DOUBLE    next 5 pipes are worth 2 points
 
 Controls
@@ -90,15 +89,21 @@ def measure_once(qc):
 POWERUPS = {
     "00": ("SHIELD", (80, 200, 255)),
     "01": ("GHOST", (220, 220, 255)),
-    "10": ("COLLAPSE", (255, 150, 60)),
     "11": ("DOUBLE", (255, 215, 70)),
 }
 
 
+POWERUP_THETA = 2 * math.acos(math.sqrt(1 / 3))   # makes P(q0 = 0) exactly 1/3
+
+
 def measure_powerup():
-    """Two qubits in equal superposition -> each power-up has a 25% chance."""
+    """Three power-ups, each exactly 1/3:
+    RY(theta) on q0 -> |0> with 1/3, |1> with 2/3
+    CH(q0 -> q1)    -> the 2/3 part is split evenly by q1
+    outcomes (q1 q0): '00' 1/3, '01' 1/3, '11' 1/3   ('10' never happens)"""
     qc = QuantumCircuit(2)
-    qc.h([0, 1])
+    qc.ry(POWERUP_THETA, 0)
+    qc.ch(0, 1)
     bits = next(iter(Statevector(qc).sample_counts(shots=1)))
     return bits, POWERUPS[bits]
 
@@ -365,7 +370,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     bird, pipes, score = new_game()
     last_bits, effect_msg, badges = "---", "", []
     speed_mult = 1.0
-    shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
+    shield, ghost_timer, double_pipes = False, 0, 0
     held = None            # stored power-up: (bits, name, colour), used with X
     flip_warn = 0          # frames left to show the gravity warning
     msg_timer = 0
@@ -390,7 +395,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     bird, pipes, score = new_game()
                     last_bits, effect_msg, badges = "---", "", []
                     speed_mult = 1.0
-                    shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
+                    shield, ghost_timer, double_pipes = False, 0, 0
                     held = None
                     msg_timer, flash, shake = 0, 0, 0    # clear leftovers from the last game
                     flip_warn = 0
@@ -416,8 +421,6 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 shield = True
             elif pname == "GHOST":
                 ghost_timer = FPS * 4
-            elif pname == "COLLAPSE":
-                collapse = True
             else:
                 double_pipes = 5
             effect_msg, msg_timer, flash = f"{pname} ON!", 70, 8
@@ -462,13 +465,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     score += 2 if double_pipes > 0 else 1
                     double_pipes = max(0, double_pipes - 1)
                     # passed a pipe -> quantum measurement
-                    if collapse:
-                        # COLLAPSE power-up: the state is forced to |000> -> no effects
-                        collapse = False
-                        last_bits, q = "000", [False] * 3
-                    else:
-                        qc = build_circuit(theta_flip, theta_speed)
-                        last_bits, q = measure_once(qc)
+                    qc = build_circuit(theta_flip, theta_speed)
+                    last_bits, q = measure_once(qc)
                     if bird.set_flipped(q[0]):
                         flip_warn = FLIP_WARN
                         if bird.flipped:
@@ -633,8 +631,6 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 active.append(("SHIELD", POWERUPS["00"][1]))
             if ghost_timer > 0:
                 active.append((f"GHOST {ghost_timer / FPS:.1f}s", POWERUPS["01"][1]))
-            if collapse:
-                active.append(("COLLAPSE next", POWERUPS["10"][1]))
             if double_pipes > 0:
                 active.append((f"x2 for {double_pipes}", POWERUPS["11"][1]))
             for i, (label, col) in enumerate(active):
@@ -643,10 +639,6 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 pygame.draw.rect(frame, (20, 15, 50), (14, 14 + i * 34, w, 28), border_radius=14)
                 pygame.draw.rect(frame, col, (14, 14 + i * 34, w, 28), border, border_radius=14)
                 frame.blit(small.render(label, True, col), (24, 18 + i * 34))
-            lvl = (base_speed - START_SPEED) / (MAX_SPEED - START_SPEED)
-            text(frame, small, f"SPEED {base_speed:.1f}", (W - 14 - small.size("SPEED 0.0")[0], 14), WHITE, center=False)
-            pygame.draw.rect(frame, (40, 30, 80), (W - 134, 40, 120, 10), border_radius=5)
-            pygame.draw.rect(frame, (255, 120, 90), (W - 134, 40, max(6, int(120 * lvl)), 10), border_radius=5)
 
             # active effects stay on screen until the next pipe
             bx = W // 2 - sum(font.size(b[0])[0] + 34 for b in badges) // 2
