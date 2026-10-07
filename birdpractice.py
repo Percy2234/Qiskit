@@ -8,6 +8,16 @@ Each effect has its own qubit, so several effects can stack at once.
   q3 = 1  -> gravity strength changes
   q4      -> 0 = light (floaty), 1 = heavy (50:50 via H gate)
 
+Upside down also slows the world down (x0.7) to keep it fair.
+The game starts slow and speeds up a little with every pipe.
+
+Power-ups (glowing orbs in some pipe gaps)
+  Grabbing an orb measures a 2-qubit circuit H(0) H(1) -> 4 equally likely outcomes:
+  |00> SHIELD    survive one pipe hit (quantum error correction!)
+  |01> GHOST     pass through pipes for 4 seconds (tunnelling)
+  |10> COLLAPSE  next pipe gives no effects (state collapses to |00000>)
+  |11> DOUBLE    next 5 pipes are worth 2 points
+
 Controls
   ENTER         : start game
   SPACE / click : flap
@@ -31,7 +41,11 @@ GROUND_H = 70
 FPS = 60
 GRAVITY = 0.45
 FLAP = -8.0
-BASE_SPEED = 3.2
+START_SPEED = 2.2      # game starts slow...
+MAX_SPEED = 4.8        # ...and speeds up to this
+SPEED_STEP = 0.08      # extra speed per pipe passed
+FLIP_SLOW = 0.7        # world moves slower while upside down
+ORB_CHANCE = 0.35      # chance a pipe has a power-up orb
 PIPE_GAP = 170
 PIPE_W = 80
 PIPE_SPACING = 300
@@ -68,6 +82,22 @@ def measure_once(qc):
     bits = next(iter(counts))  # e.g. '01101' (q4 q3 q2 q1 q0)
     q = [bits[-1 - i] == "1" for i in range(len(bits))]  # q[0] = q0, q[1] = q1, ...
     return bits, q
+
+
+POWERUPS = {
+    "00": ("SHIELD", (80, 200, 255)),
+    "01": ("GHOST", (220, 220, 255)),
+    "10": ("COLLAPSE", (255, 150, 60)),
+    "11": ("DOUBLE", (255, 215, 70)),
+}
+
+
+def measure_powerup():
+    """Two qubits in equal superposition -> each power-up has a 25% chance."""
+    qc = QuantumCircuit(2)
+    qc.h([0, 1])
+    bits = next(iter(Statevector(qc).sample_counts(shots=1)))
+    return bits, POWERUPS[bits]
 
 
 def prob_one(theta):
@@ -165,7 +195,7 @@ class Bird:
     def rect(self):
         return pygame.Rect(self.x - self.r + 4, self.y - self.r + 4, 2 * self.r - 8, 2 * self.r - 8)
 
-    def draw(self, surf, t):
+    def draw(self, surf, t, ghost=False, shield=False):
         # glowing quantum trail
         n = len(self.trail)
         for i, (tx, ty) in enumerate(self.trail[:-1]):
@@ -206,14 +236,44 @@ class Bird:
         body = pygame.transform.rotate(body, -angle)
         if self.flipped:
             body = pygame.transform.flip(body, False, True)
+        if ghost:
+            body.set_alpha(110 + int(60 * math.sin(t * 0.5)))   # see-through flicker
         surf.blit(body, body.get_rect(center=(self.x, self.y)))
+        if shield:
+            bubble = pygame.Surface((80, 80), pygame.SRCALPHA)
+            pulse = int(4 * math.sin(t * 0.15))
+            pygame.draw.circle(bubble, (80, 200, 255, 60), (40, 40), 34 + pulse)
+            pygame.draw.circle(bubble, (150, 230, 255, 220), (40, 40), 34 + pulse, 3)
+            surf.blit(bubble, (self.x - 40, self.y - 40))
 
 
 class Pipe:
-    def __init__(self, x):
+    def __init__(self, x, allow_orb=True):
         self.x = x
         self.gap_y = random.randint(130, H - GROUND_H - 130)
         self.passed = False
+        self.orb = allow_orb and random.random() < ORB_CHANCE
+
+    def orb_pos(self):
+        return self.x + PIPE_W / 2, self.gap_y
+
+    def draw_orb(self, surf, t):
+        if not self.orb:
+            return
+        ox, oy = self.orb_pos()
+        oy += math.sin(t * 0.1 + self.x * 0.01) * 6
+        g = pygame.Surface((70, 70), pygame.SRCALPHA)
+        pulse = 3 * math.sin(t * 0.2)
+        pygame.draw.circle(g, (255, 255, 255, 50), (35, 35), int(30 + pulse))
+        pygame.draw.circle(g, (180, 140, 255, 230), (35, 35), 16)
+        pygame.draw.circle(g, (255, 255, 255), (35, 35), 16, 3)
+        # orbiting "electrons"
+        for k in range(3):
+            a = t * 0.12 + k * math.tau / 3
+            pygame.draw.circle(g, GOLD, (int(35 + math.cos(a) * 24), int(35 + math.sin(a) * 10)), 3)
+        surf.blit(g, (ox - 35, oy - 35))
+        q = pygame.font.SysFont("arial", 20, bold=True).render("?", True, WHITE)
+        surf.blit(q, q.get_rect(center=(ox, oy)))
 
     def rects(self):
         top = pygame.Rect(self.x, 0, PIPE_W, self.gap_y - PIPE_GAP // 2)
@@ -267,11 +327,12 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     best = 0
 
     def new_game():
-        return Bird(), [Pipe(W + 200 + i * PIPE_SPACING) for i in range(4)], 0
+        return Bird(), [Pipe(W + 200 + i * PIPE_SPACING, allow_orb=i >= 2) for i in range(4)], 0
 
     bird, pipes, score = new_game()
     last_bits, effect_msg, badges = "-----", "", []
     speed_mult = 1.0
+    shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
     msg_timer = 0
     particles = []
     shake = 0
@@ -290,6 +351,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     bird, pipes, score = new_game()
                     last_bits, effect_msg, badges = "-----", "", []
                     speed_mult = 1.0
+                    shield, ghost_timer, collapse, double_pipes = False, 0, False, 0
                     particles = []
                     state = "play"
                     bird.flap()
@@ -316,7 +378,11 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             if e.type == pygame.MOUSEBUTTONDOWN and state == "play":
                 bird.flap()
 
-        speed = BASE_SPEED * (speed_mult if state == "play" else 0.6)
+        base_speed = min(MAX_SPEED, START_SPEED + score * SPEED_STEP)   # gets faster over time
+        if state == "play":
+            speed = base_speed * speed_mult * (FLIP_SLOW if bird.flipped else 1.0)
+        else:
+            speed = START_SPEED * 0.6
         if state != "over":
             scroll += speed
 
@@ -340,10 +406,16 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 p.x -= speed
                 if not p.passed and p.x + PIPE_W < bird.x:
                     p.passed = True
-                    score += 1
+                    score += 2 if double_pipes > 0 else 1
+                    double_pipes = max(0, double_pipes - 1)
                     # passed a pipe -> quantum measurement
-                    qc = build_circuit(theta_flip, theta_speed, theta_grav, entangled)
-                    last_bits, q = measure_once(qc)
+                    if collapse:
+                        # COLLAPSE power-up: the state is forced to |00000> -> no effects
+                        collapse = False
+                        last_bits, q = "00000", [False] * 5
+                    else:
+                        qc = build_circuit(theta_flip, theta_speed, theta_grav, entangled)
+                        last_bits, q = measure_once(qc)
                     bird.flipped = q[0]
                     speed_mult = (1.6 if q[2] else 0.55) if q[1] else 1.0
                     bird.grav_mult = (1.6 if q[4] else 0.5) if q[3] else 1.0
@@ -365,9 +437,43 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 pipes.pop(0)
                 pipes.append(Pipe(pipes[-1].x + PIPE_SPACING))
 
+            # grab a power-up orb -> quantum measurement decides which one
+            for p in pipes:
+                if p.orb:
+                    ox, oy = p.orb_pos()
+                    if (ox - bird.x) ** 2 + (oy - bird.y) ** 2 < (bird.r + 18) ** 2:
+                        p.orb = False
+                        pbits, (pname, pcol) = measure_powerup()
+                        if pname == "SHIELD":
+                            shield = True
+                        elif pname == "GHOST":
+                            ghost_timer = FPS * 4
+                        elif pname == "COLLAPSE":
+                            collapse = True
+                        else:
+                            double_pipes = 5
+                        effect_msg = f"POWER-UP |{pbits}> {pname}!"
+                        msg_timer = 90
+                        flash = 8
+                        for _ in range(35):
+                            particles.append(Particle(ox, oy, random.choice([pcol, WHITE]), 7, 50, 5))
+
+            if ghost_timer > 0:
+                ghost_timer -= 1
+
             br = bird.rect()
-            hit = bird.y - bird.r < 0 or bird.y + bird.r > H - GROUND_H
-            hit = hit or any(br.colliderect(r) for p in pipes for r in p.rects())
+            hit_edge = bird.y - bird.r < 0 or bird.y + bird.r > H - GROUND_H
+            hit_pipe = ghost_timer == 0 and any(br.colliderect(r) for p in pipes for r in p.rects())
+            if hit_pipe and shield:
+                # shield absorbs the hit, then a short ghost window so you can escape
+                shield = False
+                hit_pipe = False
+                ghost_timer = FPS
+                shake = 8
+                effect_msg, msg_timer = "SHIELD SAVED YOU!", 70
+                for _ in range(30):
+                    particles.append(Particle(bird.x, bird.y, (80, 200, 255), 6, 40, 5))
+            hit = hit_edge or hit_pipe
             if hit:
                 state = "over"
                 best = max(best, score)
@@ -411,6 +517,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
         if state != "title":
             for p in pipes:
                 p.draw(frame)
+            for p in pipes:
+                p.draw_orb(frame, t)
 
         # speed lines while FAST
         if speed_mult > 1 and state == "play":
@@ -419,7 +527,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 x = W - (t * 30 + i * 131) % (W + 200)
                 pygame.draw.line(frame, WHITE, (x, y), (x + 70, y), 2)
 
-        bird.draw(frame, t)
+        bird.draw(frame, t, ghost=ghost_timer > 0, shield=shield)
         for pt in particles:
             pt.draw(frame)
 
@@ -449,6 +557,26 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
 
         if state in ("play", "over"):
             outlined(frame, big, str(score), (W // 2, 45), WHITE, INK, 3)
+
+            # active power-ups + speed level (top-left)
+            active = []
+            if shield:
+                active.append(("SHIELD", POWERUPS["00"][1]))
+            if ghost_timer > 0:
+                active.append((f"GHOST {ghost_timer / FPS:.1f}s", POWERUPS["01"][1]))
+            if collapse:
+                active.append(("COLLAPSE next", POWERUPS["10"][1]))
+            if double_pipes > 0:
+                active.append((f"x2 for {double_pipes}", POWERUPS["11"][1]))
+            for i, (label, col) in enumerate(active):
+                w = small.size(label)[0] + 20
+                pygame.draw.rect(frame, (20, 15, 50), (14, 14 + i * 34, w, 28), border_radius=14)
+                pygame.draw.rect(frame, col, (14, 14 + i * 34, w, 28), 2, border_radius=14)
+                frame.blit(small.render(label, True, col), (24, 18 + i * 34))
+            lvl = (base_speed - START_SPEED) / (MAX_SPEED - START_SPEED)
+            text(frame, small, f"SPEED {base_speed:.1f}", (W - 14 - small.size("SPEED 0.0")[0], 14), WHITE, center=False)
+            pygame.draw.rect(frame, (40, 30, 80), (W - 134, 40, 120, 10), border_radius=5)
+            pygame.draw.rect(frame, (255, 120, 90), (W - 134, 40, max(6, int(120 * lvl)), 10), border_radius=5)
 
             # active effects stay on screen until the next pipe
             bx = W // 2 - sum(font.size(b[0])[0] + 34 for b in badges) // 2
