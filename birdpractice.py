@@ -348,7 +348,7 @@ class Pipe:
             a = t * 0.12 + k * math.tau / 3
             pygame.draw.circle(g, GOLD, (int(35 + math.cos(a) * 24), int(35 + math.sin(a) * 10)), 3)
         surf.blit(g, (ox - 35, oy - 35))
-        q = pygame.font.SysFont("arial", 20, bold=True).render("?", True, WHITE)
+        q = pygame.font.SysFont("arial", 15, bold=True).render("|?>", True, WHITE)
         surf.blit(q, q.get_rect(center=(ox, oy)))
 
     def rects(self):
@@ -406,10 +406,7 @@ class Pipe:
             pygame.draw.rect(surf, col, box, border_radius=10)
             pygame.draw.rect(surf, WHITE, box, 2, border_radius=10)
             label = f_big.render(g, True, WHITE)
-            surf.blit(label, label.get_rect(center=(cx, cy - (5 if g == "RY" else 0))))
-            if g == "RY":
-                sub = f_small.render("60/40", True, (235, 225, 255))
-                surf.blit(sub, sub.get_rect(center=(cx, cy + 13)))
+            surf.blit(label, label.get_rect(center=(cx, cy)))
 
 
 # ---------------- Main ----------------
@@ -452,6 +449,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     scroll = 0.0
 
     use_power = False
+    bloch_anim = None      # [start angle, after-gate angle, measured angle, frame]
+    popups = []            # small floating quantum labels next to the bird: [text, y, timer, colour]
     while True:
         t += 1
         for e in pygame.event.get():
@@ -463,6 +462,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 continue
             if e.type == pygame.KEYDOWN:
                 if e.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state == "title":
+                    state = "howto"                       # explain the quantum rules first
+                elif e.key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state == "howto":
                     bird, pipes, score = new_game()
                     last_bits, effect_msg, badges = "---", "", []
                     speed_mult = 1.0
@@ -470,6 +471,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     held = None
                     msg_timer, flash, shake = 0, 0, 0    # clear leftovers from the last game
                     flip_warn = 0
+                    popups = []
+                    bloch_anim = None
                     particles = []
                     state = "play"
                     bird.flap()
@@ -491,6 +494,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             else:
                 double_pipes = 5
             effect_msg, msg_timer, flash = f"{pname} ON!", 70, 8
+            popups.append([f"superposition  ->  measured |{pbits}>  =  {pname}", bird.y, 100, pcol])
             for _ in range(35):
                 particles.append(Particle(bird.x, bird.y, random.choice([pcol, WHITE]), 7, 50, 5))
         use_power = False
@@ -508,7 +512,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             if intro_timer > INTRO_FRAMES:
                 state = "title"
 
-        if state in ("intro", "title"):
+        if state in ("intro", "title", "howto"):
             # bird bobs gently on the title screen
             bird.y = H * 0.48 + math.sin(t * 0.06) * 18
             bird.flipped = False
@@ -546,9 +550,17 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     elif gate == "X":
                         gate_msg = "X: FLIPPED!"
                     elif q[0] != was_flipped:
-                        gate_msg = "RY: FLIPPED (40%)"
+                        gate_msg = "RY: FLIPPED"
                     else:
-                        gate_msg = "RY: STAYED (60%)"
+                        gate_msg = "RY: STAYED"
+                    if gate:
+                        before, after = int(was_flipped), int(q[0])
+                        # Bloch arrow: rotate by the gate (superposition), then snap to the measured pole
+                        start_a = math.pi * before
+                        bloch_anim = [start_a, start_a + (math.pi if gate == "X" else RY_THETA),
+                                      math.pi * after, 0]
+                        popups.append([f"|{before}>  ->  {gate} gate  ->  measure  ->  |{after}>",
+                                       bird.y, 110, GATE_COLS[gate]])
                     if bird.set_flipped(q[0]):
                         flip_warn = FLIP_WARN
                         if bird.flipped:
@@ -561,10 +573,15 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     if q[0]:
                         badges.append(("UPSIDE DOWN", (110, 50, 180)))
                     if q[1]:
-                        badges.append(("FAST", (230, 80, 70)) if q[2] else ("SLOW", (60, 140, 230)))
-                    speed_part = [b[0] for b in badges if b[0] in ("FAST", "SLOW")]
+                        if q[2]:
+                            badges.append(("FAST", (230, 80, 70)))
+                        elif q[0]:
+                            badges.append(("SLOW (entangled)", (60, 140, 230)))   # forced by the CH gate
+                        else:
+                            badges.append(("SLOW", (60, 140, 230)))
+                    speed_part = [b[0] for b in badges if b[0].startswith(("FAST", "SLOW"))]
                     effect_msg = " + ".join([m for m in [gate_msg] + speed_part if m])
-                    msg_timer = 90 if effect_msg else 0
+                    msg_timer = 0      # the floating label, badges and Bloch sphere explain it - keep the centre clear
                     flash = 10 if gate else 0
                     # quantum sparkle burst (bigger when a gate was applied)
                     for _ in range(30 if gate else 8):
@@ -650,7 +667,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 x = W - (t * 30 + i * 131) % (W + 200)
                 pygame.draw.line(frame, WHITE, (x, y), (x + 70, y), 2)
 
-        bird.draw(frame, t, ghost=ghost_timer > 0)
+        if state != "howto":
+            bird.draw(frame, t, ghost=ghost_timer > 0)
 
         for pt in particles:
             pt.draw(frame)
@@ -681,6 +699,31 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             layer.set_alpha(int(255 * max(0.0, alpha)))
             frame.blit(layer, (0, 0))
 
+        if state == "howto":
+            veil = pygame.Surface((W, H), pygame.SRCALPHA)
+            veil.fill((15, 8, 40, 200))
+            frame.blit(veil, (0, 0))
+            outlined(frame, big, "HOW THE QUANTUM WORKS", (W // 2, 58), GOLD, INK, 3)
+            rows = [
+                ("QUBIT", "The bird's gravity.   |0> = normal,   |1> = upside down"),
+                ("GATE", "Pick an entrance.   X = always flip,   RY = tilt the arrow (maybe flip)"),
+                ("SUPERPOSITION", "A tilted Bloch arrow = not decided yet (like a spinning coin)"),
+                ("MEASUREMENT", "The pipe snaps the arrow to |0> or |1> - gravity follows"),
+                ("ENTANGLEMENT", "Gravity and speed are linked: upside down is never FAST"),
+            ]
+            for i, (word, desc) in enumerate(rows):
+                y = 130 + i * 58
+                box = pygame.Rect(70, y - 20, 190, 40)
+                pygame.draw.rect(frame, (90, 50, 170), box, border_radius=12)
+                pygame.draw.rect(frame, (200, 170, 255), box, 2, border_radius=12)
+                wl = small.render(word, True, GOLD)
+                frame.blit(wl, wl.get_rect(center=box.center))
+                frame.blit(small.render(desc, True, WHITE), (280, y - 10))
+            text(frame, small, "Orbs:  1 qubit + H gate  ->  |0> GHOST  or  |1> DOUBLE  (50 / 50)",
+                 (W // 2, 425), (210, 230, 255))
+            if (t // 30) % 2 == 0:
+                outlined(frame, font, "PRESS ENTER TO FLY", (W // 2, 470), WHITE, INK, 2)
+
         if state == "title":
             veil = pygame.Surface((W, H), pygame.SRCALPHA)
             veil.fill((20, 10, 50, 90))
@@ -690,7 +733,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             text(frame, font, "a quantum flight", (W // 2, 190 + bob), (230, 220, 255))
             if (t // 30) % 2 == 0:
                 outlined(frame, big, "PRESS ENTER", (W // 2, 360), WHITE, INK, 3)
-            text(frame, small, "SPACE = flap    Fly through X (always flip) or RY (60/40)    Orbs = random power-up",
+            text(frame, small, "SPACE = flap      the bird's gravity is a QUBIT - gates change it, pipes MEASURE it",
                  (W // 2, 420), WHITE)
             text(frame, small, f"Best: {best}", (W // 2, 450), GOLD)
             credit = "made by TEAM JORDAN  \u00b7  Daniel & Percy"
@@ -724,19 +767,57 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 frame.blit(font.render(label, True, WHITE), (bx + 12, 85))
                 bx += w + 10
 
-            # quantum info panel (bottom-right, where the bird never flies)
-            px, py = W - 212, H - GROUND_H - 84
-            panel = pygame.Surface((200, 72), pygame.SRCALPHA)
-            pygame.draw.rect(panel, (25, 15, 60, 170), panel.get_rect(), border_radius=14)
+            # ---- Bloch sphere of the bird's gravity qubit (bottom-right, where the bird never flies) ----
+            pw, ph = 170, 186
+            px, py = W - pw - 12, H - GROUND_H - ph - 10
+            panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
+            pygame.draw.rect(panel, (25, 15, 60, 185), panel.get_rect(), border_radius=14)
             pygame.draw.rect(panel, (180, 150, 255, 200), panel.get_rect(), 2, border_radius=14)
             frame.blit(panel, (px, py))
-            rows = [("Gravity", "|1> UP" if bird.flipped else "|0> DOWN"),
-                    ("Speed", f"{prob_one(theta_speed):.0%}")]
-            for i, (name, val) in enumerate(rows):
-                y = py + 12 + i * 28
-                frame.blit(small.render(name, True, WHITE), (px + 14, y))
-                v = small.render(val, True, GOLD)
-                frame.blit(v, (px + 186 - v.get_width(), y))
+            bcx, bcy, br_ = px + pw // 2, py + 92, 40
+            # arrow angle: 0 = |0> (top), pi = |1> (bottom)
+            caption = "measured" if bloch_anim is None else ""
+            ang = math.pi if bird.flipped else 0.0
+            if bloch_anim is not None:
+                a0, a1, a2, f = bloch_anim
+                if f < 25:                                   # gate rotates the arrow
+                    k = f / 25
+                    ang = a0 + (a1 - a0) * (1 - (1 - k) ** 2)
+                    caption = "gate rotating..."
+                elif f < 55:                                 # hold in superposition
+                    ang = a1
+                    caption = "superposition" if abs(math.sin(a1)) > 0.05 else "gate applied"
+                elif f < 67:                                 # collapse to the measured pole
+                    k = (f - 55) / 12
+                    ang = a1 + (a2 + (2 * math.pi if a1 - a2 > math.pi else 0) - a1) * k
+                    caption = "MEASURE!"
+                else:
+                    bloch_anim = None
+                    ang = a2
+                    caption = "measured"
+                if bloch_anim is not None and state == "play":
+                    bloch_anim[3] += 1
+            # sphere
+            sph = pygame.Surface((br_ * 2 + 4, br_ * 2 + 4), pygame.SRCALPHA)
+            pygame.draw.circle(sph, (120, 90, 220, 70), (br_ + 2, br_ + 2), br_)
+            pygame.draw.circle(sph, (200, 180, 255, 220), (br_ + 2, br_ + 2), br_, 2)
+            pygame.draw.ellipse(sph, (200, 180, 255, 140), (2, br_ + 2 - br_ * 0.3, br_ * 2, br_ * 0.6), 1)
+            pygame.draw.line(sph, (200, 180, 255, 110), (br_ + 2, 2), (br_ + 2, br_ * 2 + 2), 1)
+            frame.blit(sph, (bcx - br_ - 2, bcy - br_ - 2))
+            l0 = small.render("|0>", True, (220, 230, 255))
+            l1 = small.render("|1>", True, (220, 230, 255))
+            frame.blit(l0, l0.get_rect(midbottom=(bcx, bcy - br_ - 2)))
+            frame.blit(l1, l1.get_rect(midtop=(bcx, bcy + br_ + 2)))
+            # arrow (rotation in the x-z plane, like an RY gate)
+            ex, ey = bcx + br_ * math.sin(ang), bcy - br_ * math.cos(ang)
+            pygame.draw.line(frame, GOLD, (bcx, bcy), (ex, ey), 4)
+            pygame.draw.circle(frame, GOLD, (int(ex), int(ey)), 6)
+            pygame.draw.circle(frame, WHITE, (int(ex), int(ey)), 6, 2)
+            pygame.draw.circle(frame, WHITE, (bcx, bcy), 3)
+            title_s = small.render("Gravity qubit", True, WHITE)
+            frame.blit(title_s, title_s.get_rect(midtop=(bcx, py + 6)))
+            cap = small.render(caption, True, GOLD)
+            frame.blit(cap, cap.get_rect(midtop=(bcx, py + 158)))
 
         if msg_timer > 0 and state == "play" and effect_msg:
             msg_timer -= 1
@@ -755,6 +836,29 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             wy = bird.y + (55 if bird.flipped else -55)          # opposite side to where it falls
             if (flip_warn // 6) % 2 == 0 or flip_warn > FLIP_WARN - 20:
                 outlined(frame, font, label, (bird.x + 20, wy), col, INK, 3)
+
+        # floating quantum labels next to the bird
+        if state == "play":
+            for i, pop in enumerate(popups):
+                label, py0, timer, col = pop
+                rise = (110 - timer) * 0.6
+                surf_t = small.render(label, True, WHITE)
+                bx_ = pygame.Rect(0, 0, surf_t.get_width() + 20, 28)
+                if py0 < 170:      # bird near the top -> show the label below it instead
+                    bx_.midleft = (bird.x + 34, py0 + 45 + rise + i * 32)
+                else:
+                    bx_.midleft = (bird.x + 34, py0 - 40 - rise - i * 32)
+                bx_.x = min(bx_.x, W - bx_.w - 10)
+                bx_.y = max(10, min(bx_.y, H - GROUND_H - 40))
+                tag = pygame.Surface(bx_.size, pygame.SRCALPHA)
+                a = min(255, timer * 6)
+                pygame.draw.rect(tag, (20, 12, 50, int(a * 0.85)), tag.get_rect(), border_radius=14)
+                pygame.draw.rect(tag, (*col, a), tag.get_rect(), 2, border_radius=14)
+                surf_t.set_alpha(a)
+                tag.blit(surf_t, (10, 4))
+                frame.blit(tag, bx_)
+                pop[2] -= 1
+            popups = [pp for pp in popups if pp[2] > 0]
 
         if state == "over":
             veil = pygame.Surface((W, H), pygame.SRCALPHA)
