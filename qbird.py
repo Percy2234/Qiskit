@@ -1,4 +1,3 @@
-
 import math
 import random
 
@@ -57,12 +56,8 @@ def build_circuit(upside_down, gate, theta_speed):
         qc.ry(RY_THETA, 0)           # RY: 60% stay, 40% flip (same from |0> or |1>)
     # gate None (normal pipe): q0 is left alone, so gravity stays the same
     qc.ry(theta_speed, 1)
-    # q2 decides slower / faster, but ONLY gets an H gate when q0 = 0 (not upside down).
-    # X-CH-X = "controlled on |0>": if the bird is upside down, q2 stays |0> -> never FAST.
-    # The rule lives inside the circuit (q0 and q2 become entangled), not in an if-statement.
-    qc.x(0)
-    qc.ch(0, 2)
-    qc.x(0)
+    qc.x(2)
+    qc.cx(0, 2)
     return qc
 
 
