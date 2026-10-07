@@ -343,6 +343,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     clock = pygame.time.Clock()
     small = pygame.font.SysFont("arial", 18, bold=True)
     font = pygame.font.SysFont("arial", 22, bold=True)
+    mid = pygame.font.SysFont("arial", 32, bold=True)
     big = pygame.font.SysFont("arial", 52, bold=True)
     huge = pygame.font.SysFont("arial", 96, bold=True)
 
@@ -601,7 +602,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             frame.blit(veil, (0, 0))
             layer = pygame.Surface((W, H), pygame.SRCALPHA)
             outlined(layer, huge, "TEAM JORDAN", (W // 2, H // 2 - 20), GOLD, INK, 5)
-            text(layer, font, "presents", (W // 2, H // 2 + 50), (230, 220, 255))
+            text(layer, mid, "Team members: Daniel, Percy", (W // 2, H // 2 + 55), WHITE)
+            text(layer, font, "presents", (W // 2, H // 2 + 100), (230, 220, 255))
             layer.set_alpha(int(255 * max(0.0, alpha)))
             frame.blit(layer, (0, 0))
 
@@ -617,7 +619,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             text(frame, small, "SPACE = flap    X = use power-up    Every pipe is a quantum measurement",
                  (W // 2, 420), WHITE)
             text(frame, small, f"Best: {best}", (W // 2, 450), GOLD)
-            text(frame, small, "made by TEAM JORDAN", (W - 120, H - 22), (240, 235, 255))
+            credit = "made by TEAM JORDAN  \u00b7  Daniel & Percy"
+            text(frame, small, credit, (W - 14 - small.size(credit)[0], H - 32), (240, 235, 255), center=False)
 
         if state in ("play", "over"):
             outlined(frame, big, str(score), (W // 2, 45), WHITE, INK, 3)
