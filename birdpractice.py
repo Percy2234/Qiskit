@@ -4,7 +4,8 @@ Every time the bird passes a pipe, a 5-qubit circuit is measured once.
 Each effect has its own qubit, so several effects can stack at once.
   q0 = 1  -> upside down (gravity flips, bird falls UP)
   q1 = 1  -> horizontal speed changes
-  q2      -> 0 = slower, 1 = faster (50:50 via H gate)
+  q2      -> 0 = slower, 1 = faster (H gate controlled on q0 = 0,
+             so when upside down it is ALWAYS slower - never FAST)
   q3 = 1  -> gravity strength changes
   q4      -> 0 = light (floaty), 1 = heavy (50:50 via H gate)
 
@@ -45,6 +46,7 @@ START_SPEED = 2.2      # game starts slow...
 MAX_SPEED = 4.8        # ...and speeds up to this
 SPEED_STEP = 0.08      # extra speed per pipe passed
 FLIP_SLOW = 0.7        # world moves slower while upside down
+FLIP_GRAVITY = 0.7     # gravity is weaker while upside down (easier to control)
 ORB_CHANCE = 0.35      # chance a pipe has a power-up orb
 PIPE_GAP = 170
 PIPE_W = 80
@@ -70,7 +72,12 @@ def build_circuit(theta_flip, theta_speed, theta_grav, entangled):
         qc.cx(0, 1)  # q1 follows q0 -> flip and speed change always happen together
     else:
         qc.ry(theta_speed, 1)
-    qc.h(2)          # slower / faster 50:50
+    # q2 decides slower / faster, but ONLY gets an H gate when q0 = 0 (not upside down).
+    # X-CH-X = "controlled on |0>": if the bird is upside down, q2 stays |0> -> never FAST.
+    # The rule lives inside the circuit (q0 and q2 become entangled), not in an if-statement.
+    qc.x(0)
+    qc.ch(0, 2)
+    qc.x(0)
     qc.ry(theta_grav, 3)
     qc.h(4)          # light / heavy 50:50
     return qc
@@ -179,13 +186,17 @@ class Bird:
         self.grav_mult = 1.0
         self.trail = []
 
+    def gravity_factor(self):
+        """HEAVY / FLOATY multiplier, plus weaker gravity while upside down."""
+        return self.grav_mult * (FLIP_GRAVITY if self.flipped else 1.0)
+
     def flap(self):
         # scale flap with gravity so jump height stays similar (heavy = snappy, floaty = slow-motion)
-        f = FLAP * math.sqrt(self.grav_mult)
+        f = FLAP * math.sqrt(self.gravity_factor())
         self.vy = -f if self.flipped else f
 
     def update(self):
-        g = GRAVITY * self.grav_mult * (-1 if self.flipped else 1)
+        g = GRAVITY * self.gravity_factor() * (-1 if self.flipped else 1)
         self.vy += g
         self.vy = max(-11, min(11, self.vy))
         self.y += self.vy
@@ -404,7 +415,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             bird.update()
             for p in pipes:
                 p.x -= speed
-                if not p.passed and p.x + PIPE_W < bird.x:
+                # measure only after the bird's whole body has cleared the pipe (cap included)
+                if not p.passed and p.x + PIPE_W + 7 < bird.x - bird.r:
                     p.passed = True
                     score += 2 if double_pipes > 0 else 1
                     double_pipes = max(0, double_pipes - 1)
