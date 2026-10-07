@@ -16,7 +16,7 @@ The game starts slow and speeds up a little with every pipe.
 
 Power-ups (glowing orbs in some pipe gaps)
   Grabbing an orb measures a 2-qubit circuit RY(theta) + CH that splits into
-  exactly 3 outcomes, each 1/3. The power-up is stored (one slot) and used with X:
+  exactly 3 outcomes, each 1/3. The power-up is used automatically when grabbed:
   |00> SHIELD    survive one pipe hit (inspired by quantum error correction)
   |01> GHOST     pass through pipes for 4 seconds (inspired by tunnelling)
   |11> DOUBLE    next 5 pipes are worth 2 points
@@ -24,7 +24,6 @@ Power-ups (glowing orbs in some pipe gaps)
 Controls
   ENTER         : start game
   SPACE / click : flap  (fly through the upper or lower gap to pick a gate)
-  X             : use the stored power-up
   R             : back to title after game over
 """
 import math
@@ -496,8 +495,6 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                         particles.append(Particle(bird.x - 15, bird.y, (230, 220, 255), 2, 20, 3))
                 elif e.key == pygame.K_r and state == "over":
                     state = "title"
-                elif e.key == pygame.K_x and state == "play" and held:
-                    use_power = True
             if e.type == pygame.MOUSEBUTTONDOWN and state == "play":
                 bird.flap()
 
@@ -602,8 +599,8 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     if (ox - bird.x) ** 2 + (oy - bird.y) ** 2 < (bird.r + 18) ** 2:
                         p.orb = False
                         pbits, (pname, pcol) = measure_powerup()
-                        held = (pbits, pname, pcol)        # stored - press X to use (replaces old one)
-                        effect_msg = f"GOT {pname}!  press X"
+                        held = (pbits, pname, pcol)
+                        use_power = True                   # applied automatically on the next frame
                         msg_timer = 90
                         flash = 8
                         for _ in range(35):
@@ -720,7 +717,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             text(frame, font, "a quantum flight", (W // 2, 190 + bob), (230, 220, 255))
             if (t // 30) % 2 == 0:
                 outlined(frame, big, "PRESS ENTER", (W // 2, 360), WHITE, INK, 3)
-            text(frame, small, "SPACE = flap    Fly through X (always flip) or RY (60/40)    X key = use power-up",
+            text(frame, small, "SPACE = flap    Fly through X (always flip) or RY (60/40)    Orbs = random power-up",
                  (W // 2, 420), WHITE)
             text(frame, small, f"Best: {best}", (W // 2, 450), GOLD)
             credit = "made by TEAM JORDAN  \u00b7  Daniel & Percy"
