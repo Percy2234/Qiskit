@@ -53,7 +53,7 @@ GATE_GAP = 145         # height of each of the two gaps in a pipe
 PIPE_GAP = 170         # gap of a normal (single-entrance) pipe
 GATE_CHANCE = 0.45     # chance a pipe has two entrances with gates (from the 2nd pipe on)
 RY_FLIP = 0.4          # RY gate: 40% flip, 60% stay
-RY_THETA = 2 * math.asin(math.sqrt(RY_FLIP))   # P(flip) = sin^2(theta / 2) = 0.4
+RY_THETA = math.pi / 3 # 75%chance stay, 25% flip
 GATE_COLS = {"X": (225, 60, 80), "RY": (140, 90, 230)}
 PIPE_W = 58             # pipe thickness (was 80)
 PIPE_SPACING = 300
@@ -413,7 +413,7 @@ class Pipe:
 def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     pygame.init()
     screen = pygame.display.set_mode((W, H))
-    pygame.display.set_caption("Qubird - Quantum Flight")
+    pygame.display.set_caption(" The Qubird - Quantum Flight")
     clock = pygame.time.Clock()
     small = pygame.font.SysFont("arial", 18, bold=True)
     font = pygame.font.SysFont("arial", 22, bold=True)
