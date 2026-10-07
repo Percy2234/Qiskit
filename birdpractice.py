@@ -15,11 +15,9 @@ Upside down also slows the world down (x0.7) to keep it fair.
 The game starts slow and speeds up a little with every pipe.
 
 Power-ups (glowing orbs in some pipe gaps)
-  Grabbing an orb measures a 2-qubit circuit RY(theta) + CH that splits into
-  exactly 3 outcomes, each 1/3. The power-up is used automatically when grabbed:
-  |00> SHIELD    survive one pipe hit (inspired by quantum error correction)
-  |01> GHOST     pass through pipes for 4 seconds (inspired by tunnelling)
-  |11> DOUBLE    next 5 pipes are worth 2 points
+  Grabbing an orb measures ONE qubit after an H gate -> 50/50, used automatically:
+  |0> GHOST     pass through pipes for 4 seconds (inspired by tunnelling)
+  |1> DOUBLE    next 5 pipes are worth 2 points
 
 Controls
   ENTER         : start game
@@ -57,7 +55,7 @@ GATE_CHANCE = 0.45     # chance a pipe has two entrances with gates (from the 2n
 RY_FLIP = 0.4          # RY gate: 40% flip, 60% stay
 RY_THETA = 2 * math.asin(math.sqrt(RY_FLIP))   # P(flip) = sin^2(theta / 2) = 0.4
 GATE_COLS = {"X": (225, 60, 80), "RY": (140, 90, 230)}
-PIPE_W = 80
+PIPE_W = 58             # pipe thickness (was 80)
 PIPE_SPACING = 300
 
 # colours
@@ -102,23 +100,15 @@ def measure_once(qc):
 
 
 POWERUPS = {
-    "00": ("SHIELD", (80, 200, 255)),
-    "01": ("GHOST", (220, 220, 255)),
-    "11": ("DOUBLE", (255, 215, 70)),
+    "0": ("GHOST", (220, 220, 255)),
+    "1": ("DOUBLE", (255, 215, 70)),
 }
 
 
-POWERUP_THETA = 2 * math.acos(math.sqrt(1 / 3))   # makes P(q0 = 0) exactly 1/3
-
-
 def measure_powerup():
-    """Three power-ups, each exactly 1/3:
-    RY(theta) on q0 -> |0> with 1/3, |1> with 2/3
-    CH(q0 -> q1)    -> the 2/3 part is split evenly by q1
-    outcomes (q1 q0): '00' 1/3, '01' 1/3, '11' 1/3   ('10' never happens)"""
-    qc = QuantumCircuit(2)
-    qc.ry(POWERUP_THETA, 0)
-    qc.ch(0, 1)
+    """One qubit, one H gate: |0> or |1>, 50/50 -> GHOST or DOUBLE."""
+    qc = QuantumCircuit(1)
+    qc.h(0)
     bits = next(iter(Statevector(qc).sample_counts(shots=1)))
     return bits, POWERUPS[bits]
 
@@ -234,7 +224,7 @@ class Bird:
     def rect(self):
         return pygame.Rect(self.x - self.r + 4, self.y - self.r + 4, 2 * self.r - 8, 2 * self.r - 8)
 
-    def draw(self, surf, t, ghost=False, shield=False):
+    def draw(self, surf, t, ghost=False):
         # glowing quantum trail
         n = len(self.trail)
         for i, (tx, ty) in enumerate(self.trail[:-1]):
@@ -289,12 +279,6 @@ class Bird:
         if ghost:
             body.set_alpha(110 + int(60 * math.sin(t * 0.5)))   # see-through flicker
         surf.blit(body, body.get_rect(center=(self.x, self.y)))
-        if shield:
-            bubble = pygame.Surface((80, 80), pygame.SRCALPHA)
-            pulse = int(4 * math.sin(t * 0.15))
-            pygame.draw.circle(bubble, (80, 200, 255, 60), (40, 40), 34 + pulse)
-            pygame.draw.circle(bubble, (150, 230, 255, 220), (40, 40), 34 + pulse, 3)
-            surf.blit(bubble, (self.x - 40, self.y - 40))
 
 
 class Pipe:
@@ -457,7 +441,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
     bird, pipes, score = new_game()
     last_bits, effect_msg, badges = "---", "", []
     speed_mult = 1.0
-    shield, ghost_timer, double_pipes = False, 0, 0
+    ghost_timer, double_pipes = 0, 0
     held = None            # stored power-up: (bits, name, colour), used with X
     flip_warn = 0          # frames left to show the gravity warning
     msg_timer = 0
@@ -482,7 +466,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                     bird, pipes, score = new_game()
                     last_bits, effect_msg, badges = "---", "", []
                     speed_mult = 1.0
-                    shield, ghost_timer, double_pipes = False, 0, 0
+                    ghost_timer, double_pipes = 0, 0
                     held = None
                     msg_timer, flash, shake = 0, 0, 0    # clear leftovers from the last game
                     flip_warn = 0
@@ -502,9 +486,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
         if state == "play" and (use_power or (autoplay and held)) and held:
             pbits, pname, pcol = held
             held = None
-            if pname == "SHIELD":
-                shield = True
-            elif pname == "GHOST":
+            if pname == "GHOST":
                 ghost_timer = FPS * 4
             else:
                 double_pipes = 5
@@ -612,15 +594,6 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             br = bird.rect()
             hit_edge = bird.y - bird.r < 0 or bird.y + bird.r > H - GROUND_H
             hit_pipe = ghost_timer == 0 and any(br.colliderect(r) for p in pipes for r in p.rects())
-            if hit_pipe and shield:
-                # shield absorbs the hit, then a short ghost window so you can escape
-                shield = False
-                hit_pipe = False
-                ghost_timer = FPS
-                shake = 8
-                effect_msg, msg_timer = "SHIELD SAVED YOU!", 70
-                for _ in range(30):
-                    particles.append(Particle(bird.x, bird.y, (80, 200, 255), 6, 40, 5))
             hit = hit_edge or hit_pipe
             if hit:
                 state = "over"
@@ -677,7 +650,7 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
                 x = W - (t * 30 + i * 131) % (W + 200)
                 pygame.draw.line(frame, WHITE, (x, y), (x + 70, y), 2)
 
-        bird.draw(frame, t, ghost=ghost_timer > 0, shield=shield)
+        bird.draw(frame, t, ghost=ghost_timer > 0)
 
         for pt in particles:
             pt.draw(frame)
@@ -730,12 +703,10 @@ def main(max_frames=None, screenshot=None, autoplay=False, start_playing=False):
             active = []
             if held:
                 active.append((f"[X] {held[1]}", held[2]))
-            if shield:
-                active.append(("SHIELD", POWERUPS["00"][1]))
             if ghost_timer > 0:
-                active.append((f"GHOST {ghost_timer / FPS:.1f}s", POWERUPS["01"][1]))
+                active.append((f"GHOST {ghost_timer / FPS:.1f}s", POWERUPS["0"][1]))
             if double_pipes > 0:
-                active.append((f"x2 for {double_pipes}", POWERUPS["11"][1]))
+                active.append((f"x2 for {double_pipes}", POWERUPS["1"][1]))
             for i, (label, col) in enumerate(active):
                 w = small.size(label)[0] + 20
                 border = 2 + (1 if label.startswith("[X]") and (t // 15) % 2 else 0)   # stored one blinks
